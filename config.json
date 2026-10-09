@@ -1,0 +1,16 @@
+{
+  "cookies_dir": "cookies",
+  "download_path": "C:/Users/zeng/Desktop",
+  "max_tabs": "5",
+  "download_threads": "4",
+  "download_mode": "coroutine",
+  "first_timeout": "8",
+  "retry_timeout": "15",
+  "browser_type": "edge",
+  "browser_mode": "headed",
+  "browser_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "create_zip": false,
+  "image_name_padding": "0",
+  "chapter_folder_naming": "title",
+  "window_size": "medium"
+}
