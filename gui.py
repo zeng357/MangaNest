@@ -153,6 +153,15 @@ class GenericComicDownloaderGUI:
             command=lambda: self.show_page('convert')
         )
         self.nav_convert_btn.pack(fill=tk.X, padx=6, pady=2)
+        self.nav_translate_btn = tk.Button(
+            self.sidebar, text="🈶 汉化", font=("微软雅黑", 11),
+            bg=SIDEBAR_BG, fg=NAV_TEXT,
+            activebackground=SIDEBAR_HOVER_BG, activeforeground="#ffffff",
+            relief=tk.FLAT, bd=0, highlightthickness=0,
+            anchor="w", padx=14, pady=9, cursor="hand2",
+            command=lambda: self.show_page('translate')
+        )
+        self.nav_translate_btn.pack(fill=tk.X, padx=6, pady=2)
         self.nav_settings_btn = tk.Button(
             self.sidebar, text="⚙ 设置", font=("微软雅黑", 11),
             bg=SIDEBAR_BG, fg=NAV_TEXT,
@@ -319,7 +328,7 @@ class GenericComicDownloaderGUI:
 
         # ========== 通用设置变量（控件位于"⚙ 设置"对话框，见 open_settings） ==========
         self.thread_var = tk.StringVar(value="5")
-        self.download_thread_var = tk.StringVar(value="4")
+        self.download_thread_var = tk.StringVar(value="6")
         self.download_mode_var = tk.StringVar(value="coroutine")
         self.first_timeout_var = tk.StringVar(value="8")
         self.retry_timeout_var = tk.StringVar(value="15")
@@ -622,6 +631,8 @@ class GenericComicDownloaderGUI:
         self.apply_saved_config()
         # 构建『格式转换』页（侧边栏第三页）
         self._build_convert_page()
+        # 构建『汉化』页（侧边栏第四页）
+        self._build_translate_page()
         # 初始显示主页面
         self.show_page('main')
     
@@ -775,30 +786,36 @@ class GenericComicDownloaderGUI:
             self.append_status("已关闭：下载完成后不生成压缩包")
 
     def show_page(self, page_name):
-        """左侧边栏页面切换：'main' 主页 / 'settings' 设置 / 'convert' 格式转换"""
-        if page_name == 'main':
-            try:
-                self.page_convert.pack_forget()
-            except Exception:
-                pass
-            self.page_settings.pack_forget()
-            self.page_main.pack(fill=tk.BOTH, expand=True)
-        elif page_name == 'convert':
-            self.page_main.pack_forget()
-            self.page_settings.pack_forget()
-            self.page_convert.pack(fill=tk.BOTH, expand=True)
-        else:
-            self.page_main.pack_forget()
-            try:
-                self.page_convert.pack_forget()
-            except Exception:
-                pass
-            self.page_settings.pack(fill=tk.BOTH, expand=True)
+        """左侧边栏页面切换：'main' 主页 / 'settings' 设置 / 'convert' 格式转换 / 'translate' 汉化"""
+        pages = {
+            'main': getattr(self, 'page_main', None),
+            'convert': getattr(self, 'page_convert', None),
+            'translate': getattr(self, 'page_translate', None),
+            'settings': getattr(self, 'page_settings', None),
+        }
+        for name, frame in pages.items():
+            if frame is None:
+                continue
+            if name == page_name:
+                frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                try:
+                    frame.pack_forget()
+                except Exception:
+                    pass
         self._update_nav_highlight(page_name)
 
     def _update_nav_highlight(self, page_name):
         """更新侧边栏导航按钮的选中高亮（选中蓝底白字，未选中与侧栏底色融合）"""
-        for btn, name in ((self.nav_main_btn, 'main'), (self.nav_settings_btn, 'settings'), (self.nav_convert_btn, 'convert')):
+        nav_pairs = [
+            (self.nav_main_btn, 'main'),
+            (self.nav_settings_btn, 'settings'),
+            (self.nav_convert_btn, 'convert'),
+            (getattr(self, 'nav_translate_btn', None), 'translate'),
+        ]
+        for btn, name in nav_pairs:
+            if btn is None:
+                continue
             if name == page_name:
                 btn.config(bg=NAV_SELECTED_BG, fg=NAV_SELECTED_TEXT,
                            activebackground=NAV_SELECTED_HOVER_BG)
@@ -1735,6 +1752,146 @@ class GenericComicDownloaderGUI:
             self.root.after(0, _do)
         except Exception:
             pass
+
+    # ==================== 汉化页（第四页） ====================
+
+    def _build_translate_page(self):
+        """构建『汉化』页：把英文漫画章节图片转成中文。
+
+        引擎：开源项目 BallonsTranslator（已装在 tools\\Ballonstranslator_win_minium）。
+        流程：长页切片 -> 文本检测(CTD) -> OCR(mit48px) -> MyMemory 机翻 ->
+        LaMa 抹字 -> 中文回填 -> 拼回整页 + 中英对照 txt。
+        """
+        self.page_translate = ttk.Frame(self.main_frame)
+        self.page_translate.columnconfigure(0, weight=1)
+        self.page_translate.rowconfigure(4, weight=1)
+
+        ttk.Label(
+            self.page_translate,
+            text="汉化：把下载下来的英文漫画图片转成中文（开源引擎 BallonsTranslator，仅学习研究用）",
+            font=("微软雅黑", 10),
+        ).grid(row=0, column=0, sticky='w', padx=12, pady=(6, 2))
+
+        src_frame = ttk.LabelFrame(self.page_translate, text="① 选择章节文件夹", style="Card.TLabelframe")
+        src_frame.grid(row=1, column=0, sticky='ew', padx=12, pady=6)
+        src_frame.columnconfigure(0, weight=1)
+
+        self.tr_input_var = tk.StringVar()
+        ttk.Entry(src_frame, textvariable=self.tr_input_var, font=("微软雅黑", 9)).grid(
+            row=0, column=0, sticky='ew', padx=4, pady=4)
+        ttk.Button(src_frame, text="浏览", width=8, command=self.tr_browse_input).grid(
+            row=0, column=1, sticky='w', padx=4, pady=4)
+
+        opt_frame = ttk.LabelFrame(self.page_translate, text="② 输出设置", style="Card.TLabelframe")
+        opt_frame.grid(row=2, column=0, sticky='ew', padx=12, pady=6)
+        opt_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(opt_frame, text="输出目录:").grid(row=0, column=0, sticky='e', padx=(4, 8), pady=4)
+        self.tr_output_var = tk.StringVar()
+        ttk.Entry(opt_frame, textvariable=self.tr_output_var, font=("微软雅黑", 9)).grid(
+            row=0, column=1, sticky='ew', pady=4)
+        ttk.Button(opt_frame, text="浏览", width=8, command=self.tr_browse_output).grid(
+            row=0, column=2, sticky='w', padx=4)
+
+        self.tr_text_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opt_frame, text="只输出中英对照文本，不覆盖图片",
+                        variable=self.tr_text_only_var).grid(
+            row=1, column=0, columnspan=3, sticky='w', padx=4, pady=4)
+        ttk.Label(opt_frame, text="留空输出目录 = 在原章节文件夹旁自动生成「… 汉化版」",
+                  font=("微软雅黑", 8), foreground="gray").grid(
+            row=2, column=0, columnspan=3, sticky='w', padx=4)
+
+        run_row = ttk.Frame(self.page_translate)
+        run_row.grid(row=3, column=0, sticky='w', padx=12, pady=4)
+        self.tr_start_btn = ttk.Button(run_row, text="开始汉化", width=14, command=self.tr_start)
+        self.tr_start_btn.pack(side=tk.LEFT, padx=2)
+        ttk.Label(run_row, text="首次运行需加载 OCR 模型，单页约 15~25 秒",
+                  font=("微软雅黑", 8), foreground="gray").pack(side=tk.LEFT, padx=10)
+
+        log_frame = ttk.LabelFrame(self.page_translate, text="③ 进度", style="Card.TLabelframe")
+        log_frame.grid(row=4, column=0, sticky='nsew', padx=12, pady=(4, 10))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+
+        self.tr_log_txt = tk.Text(log_frame, height=12, font=("Consolas", 9), state=tk.DISABLED, wrap=tk.WORD)
+        self.tr_log_txt.grid(row=0, column=0, sticky='nsew')
+        tr_scroll = ttk.Scrollbar(log_frame, command=self.tr_log_txt.yview)
+        tr_scroll.grid(row=0, column=1, sticky='ns')
+        self.tr_log_txt.configure(yscrollcommand=tr_scroll.set)
+
+    def tr_append_log(self, text):
+        def _do():
+            try:
+                self.tr_log_txt.configure(state=tk.NORMAL)
+                self.tr_log_txt.insert(tk.END, str(text) + "\n")
+                self.tr_log_txt.see(tk.END)
+                self.tr_log_txt.configure(state=tk.DISABLED)
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _do)
+        except Exception:
+            pass
+
+    def tr_browse_input(self):
+        d = filedialog.askdirectory(title="选择含英文漫画图片的章节文件夹")
+        if d:
+            self.tr_input_var.set(d.replace('/', '\\'))
+
+    def tr_browse_output(self):
+        d = filedialog.askdirectory(title="选择输出目录")
+        if d:
+            self.tr_output_var.set(d.replace('/', '\\'))
+
+    def tr_start(self):
+        src = (self.tr_input_var.get() or '').strip()
+        if not src or not os.path.isdir(src):
+            messagebox.showinfo("提示", "请先选择一个含图片的章节文件夹", parent=self.root)
+            return
+        out = (self.tr_output_var.get() or '').strip() or None
+        text_only = bool(self.tr_text_only_var.get())
+
+        try:
+            import bt_slice_translate
+        except Exception as e:
+            messagebox.showwarning(
+                "缺少组件",
+                "汉化需要项目内 tools\\Ballonstranslator_win_minium（开源引擎 BallonsTranslator）。\n"
+                "请确认该目录存在且已按项目文档装好依赖与模型。\n\n"
+                f"错误信息：{e}",
+                parent=self.root)
+            return
+
+        if not os.path.isfile(bt_slice_translate.BT_PY):
+            messagebox.showwarning(
+                "缺少引擎",
+                "没有找到 BallonsTranslator 内置解释器：\n"
+                f"{bt_slice_translate.BT_PY}\n\n"
+                "请按项目文档把 BallonsTranslator 解压到 tools\\Ballonstranslator_win_minium。",
+                parent=self.root)
+            return
+
+        self.tr_start_btn.configure(state=tk.DISABLED)
+        self.tr_append_log(f"开始汉化（引擎: BallonsTranslator）: {src}")
+
+        def task():
+            try:
+                bt_slice_translate.translate_folder(
+                    src, out, text_only=text_only, log=self.tr_append_log)
+                self.tr_append_log("汉化完成。")
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "完成", "汉化完成，结果在输出目录（含图片与「中英对照.txt」）", parent=self.root))
+            except Exception as e:
+                err_text = str(e)
+                self.tr_append_log(f"汉化失败: {err_text}")
+                self.root.after(0, lambda m=err_text: messagebox.showwarning(
+                    "失败", f"汉化失败：{m}", parent=self.root))
+            finally:
+                self.root.after(0, lambda: self.tr_start_btn.configure(state=tk.NORMAL))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    # ==================== 格式转换页方法 ====================
 
     def conv_add_folders(self):
         folders = filedialog.askdirectory(title="选择漫画文件夹（可多选，Ctrl选择多个）")

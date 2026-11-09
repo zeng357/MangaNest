@@ -300,8 +300,93 @@ class ComicCrawler:
             print(f"设置Cookie失败: {e}")
             return False
     
+    @staticmethod
+    def _english_query_variants(english):
+        """由整句英译生成递进缩短的搜索词：整句 -> 去停用词核心组合 -> 最长核心词。
+
+        站点搜索（WordPress /?s=）对整句长标题命中率低，用核心词反而更容易命中。
+        """
+        import re as _re
+        stop = {'the', 'a', 'an', 'of', 'to', 'my', 'me', 'i', 'and', 'in', 'on',
+                'is', 'was', 'with', 'after', 'before', 'for', 'at', 'it', 'this',
+                'that', 'you', 'your', 'his', 'her', 'be', 'not', 'from', 'by', 'am',
+                'im', 'its', 's', 't', 'do', 'does', 'did', 'are', 'were', 'have', 'has'}
+        tokens = [_re.sub(r"[’']", '', t) for t in _re.findall(r"[A-Za-z0-9’']+", english)]
+        core = [t for t in tokens if len(t) >= 3 and t.lower() not in stop]
+        variants = [english]
+        if len(core) >= 2:
+            # 优先级：最长的两个词（通常是「形容词+名词」或「角色+核心词」）
+            by_len = sorted(core, key=len, reverse=True)
+            variants.append(' '.join(by_len[:2]))
+            variants.append(' '.join(core[:3]))
+            for i in range(min(4, len(core))):
+                for j in range(i + 1, min(4, len(core))):
+                    variants.append(core[i] + ' ' + core[j])
+        # 不用单个单词兜底：单词过于宽泛，会命中完全无关的作品
+        min_tokens = min(2, len(core))
+        seen = set()
+        result = []
+        for v in variants:
+            key = v.lower().strip()
+            if not key or key in seen:
+                continue
+            n_tokens = len([t for t in [_re.sub(r"[’']", '', x)
+                                       for x in _re.findall(r"[A-Za-z0-9’']+", v)]
+                            if len(t) >= 3 and t.lower() not in stop])
+            if n_tokens < min_tokens or n_tokens == 0:
+                continue
+            seen.add(key)
+            result.append(v)
+            if len(result) >= 6:
+                break
+        return result
+
     def search_comic(self, comic_name, comic_id=None):
-        return self.site_crawler.search_comic(comic_name, comic_id)
+        """站点搜索入口：中文关键词搜英文站时，先译成英文再搜。
+
+        规则（只对声明 SEARCH_LANG='en' 的站点生效，中文站行为不变）：
+          - 含中文关键词 -> 先翻译成英文，用英文搜；
+          - 翻译失败 -> 退回原关键词直搜；
+          - 英文搜仍失败且原关键词是中文 -> 再用原关键词兜底搜一次；
+          - pure ASCII 关键词 / comic_id 直连：直接走站点实现。
+        """
+        from search_translate import contains_cjk, translate_keyword_to_english
+
+        site_lang = getattr(self.site_crawler, 'SEARCH_LANG', 'zh')
+        need_translate = (
+            site_lang == 'en'
+            and not comic_id
+            and contains_cjk(comic_name)
+        )
+
+        if need_translate:
+            english = translate_keyword_to_english(comic_name)
+            if english:
+                print(f"中文关键词译为英文后搜索: {comic_name} -> {english}")
+                # 长句直译往往过整，站点搜索命中率低：先整句搜，再逐步用核心词搜
+                queries = self._english_query_variants(english)
+                last_error = None
+                for q in queries:
+                    try:
+                        if q != english:
+                            print(f"用缩短后的英文关键词重试: {q}")
+                        return self.site_crawler.search_comic(q, comic_id)
+                    except Exception as e:
+                        last_error = e
+                # 英文站的中文关键词直搜只会命中无关作品，故不再退回中文搜索
+                raise Exception(
+                    f"中文关键词已译为英文「{english}」但站点未搜到匹配作品：{last_error}\n"
+                    f"建议：改用更短的英文关键词（如主角名/核心词），或直接粘贴作品详情页链接"
+                )
+            print("中文关键词翻译失败，改用原关键词直接搜索")
+
+        try:
+            return self.site_crawler.search_comic(comic_name, comic_id)
+        except Exception:
+            # 非中文站点/纯英文关键词：保持原有异常行为
+            raise
+
+
     
     def get_cover_image(self, target_comic_tab):
         # 优先使用站点爬虫自定义的get_cover_image

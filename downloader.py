@@ -1071,8 +1071,21 @@ def retry_failed_batch(failed_list, progress_callback=None, max_workers=8, timeo
         file_path = img_info['path']
         index = img_info['image_index']
         
-        # 尝试requests下载
-        success, info = download_with_requests(url, file_path, timeout=timeout)
+        # 第一轮：aiohttp 通道（与协程首轮同通道，避免 requests 被 WAF/TLS 重置的站重试仍失败）
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                success, info = loop.run_until_complete(
+                    download_with_aiohttp(url, file_path, timeout=timeout)
+                )
+            finally:
+                loop.close()
+        except Exception as e:
+            success, info = False, str(e)[:50]
+
+        # aiohttp 仍失败：回退 requests 通道
+        if not success:
+            success, info = download_with_requests(url, file_path, timeout=timeout)
         if success:
             print(f"  ✓ 第{index}张重试成功")
             if progress_callback:
@@ -1221,7 +1234,7 @@ async def download_batch(images_to_download, concurrent_limit, thread_count=4, u
         return await download_batch_coroutine(images_to_download, concurrent_limit, progress_callback, timeout=timeout)
 
 
-async def download_chapter_images(herf_list, folder_name, chapter_num, concurrent_limit=3, thread_count=4, use_thread_coroutine=True, progress_callback=None, use_thread_only=False, timeout=10):
+async def download_chapter_images(herf_list, folder_name, chapter_num, concurrent_limit=6, thread_count=6, use_thread_coroutine=True, progress_callback=None, use_thread_only=False, timeout=10):
     """下载单个章节的图片
     
     所有失败都收集返回，最后统一重试
@@ -1315,7 +1328,7 @@ def save_image_urls_to_json(all_chapters_data, comic_name, base_path=None):
     return json_path
 
 
-async def download_all_chapters(all_chapters_data, comic_name, base_path=None, save_json_only=False, concurrent_limit=3, download_thread_count=4, use_thread_coroutine=True, progress_callback=None, max_retries=3, use_thread_only=False, first_timeout=8, retry_timeout=15, site_crawler=None):
+async def download_all_chapters(all_chapters_data, comic_name, base_path=None, save_json_only=False, concurrent_limit=6, download_thread_count=6, use_thread_coroutine=True, progress_callback=None, max_retries=3, use_thread_only=False, first_timeout=8, retry_timeout=15, site_crawler=None):
     """下载所有章节，可选只保存JSON不下载
     
     Args:
@@ -1399,19 +1412,23 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     print(f"首次下载完成！总耗时: {total_elapsed:.1f}秒")
     print(f"失败图片: {len(all_failed)} 张")
     
-    # 所有章节下载完成后，统一多线程重试所有失败图片（浏览器模式无法HTTP重试，跳过）
+    # 所有章节下载完成后，统一重试所有失败图片（浏览器模式无法HTTP重试，跳过）
     use_browser_mode = is_browser_render_site(site_crawler)
     if all_failed and not use_browser_mode:
-        print(f"\n{'='*50}")
-        print(f"开始统一重试所有失败图片: {len(all_failed)} 张")
-        print(f"{'='*50}")
-        
-        # 使用多线程批量重试
-        still_failed = retry_failed_batch(all_failed, progress_callback, max_workers=download_thread_count, timeout=retry_timeout)
-        success_count = len(all_failed) - len(still_failed)
-        print(f"\n统一重试完成: 成功 {success_count} 张，失败 {len(still_failed)} 张")
-        
-        all_failed = still_failed
+        retry_rounds = 2  # 首轮下载后，再自动重试 2 轮，直到无失败或轮次用完
+        for round_no in range(1, retry_rounds + 1):
+            print(f"\n{'='*50}")
+            print(f"第 {round_no}/{retry_rounds} 轮自动重试: {len(all_failed)} 张")
+            print(f"{'='*50}")
+
+            still_failed = retry_failed_batch(all_failed, progress_callback,
+                                              max_workers=download_thread_count, timeout=retry_timeout)
+            success_count = len(all_failed) - len(still_failed)
+            print(f"第 {round_no} 轮完成: 成功 {success_count} 张，失败 {len(still_failed)} 张")
+
+            all_failed = still_failed
+            if not all_failed:
+                break
     
     # 保存失败列表到JSON（附带站点信息，供浏览器模式重试使用）
     if all_failed:
@@ -1479,7 +1496,7 @@ def save_failed_json(failed_list, comic_name, base_path=None, site_name=None, re
     return failed_json_path
 
 
-async def download_from_failed_json(json_path, concurrent_limit=3, download_thread_count=4, use_thread_coroutine=True, progress_callback=None, max_retries=3, first_timeout=8, retry_timeout=15):
+async def download_from_failed_json(json_path, concurrent_limit=6, download_thread_count=6, use_thread_coroutine=True, progress_callback=None, max_retries=3, first_timeout=8, retry_timeout=15):
     """从失败的JSON文件重新下载图片
     
     Args:
@@ -1538,18 +1555,22 @@ async def download_from_failed_json(json_path, concurrent_limit=3, download_thre
     start_time = time.time()
     all_failed = await download_batch(images_to_download, concurrent_limit, download_thread_count, use_thread_coroutine, progress_callback, timeout=first_timeout)
     
-    # 所有失败后，统一多线程重试
+    # 所有失败后，自动多轮重试
     if all_failed:
-        print(f"\n{'='*50}")
-        print(f"开始统一重试所有失败图片: {len(all_failed)} 张")
-        print(f"{'='*50}")
-        
-        # 使用多线程批量重试
-        still_failed = retry_failed_batch(all_failed, progress_callback, max_workers=download_thread_count, timeout=retry_timeout)
-        success_count = len(all_failed) - len(still_failed)
-        print(f"\n统一重试完成: 成功 {success_count} 张，失败 {len(still_failed)} 张")
-        
-        all_failed = still_failed
+        retry_rounds = 2
+        for round_no in range(1, retry_rounds + 1):
+            print(f"\n{'='*50}")
+            print(f"第 {round_no}/{retry_rounds} 轮自动重试: {len(all_failed)} 张")
+            print(f"{'='*50}")
+
+            still_failed = retry_failed_batch(all_failed, progress_callback,
+                                              max_workers=download_thread_count, timeout=retry_timeout)
+            success_count = len(all_failed) - len(still_failed)
+            print(f"第 {round_no} 轮完成: 成功 {success_count} 张，失败 {len(still_failed)} 张")
+
+            all_failed = still_failed
+            if not all_failed:
+                break
     
     elapsed = time.time() - start_time
     
