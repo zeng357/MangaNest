@@ -11,8 +11,9 @@ MangaNest · Multi-Site Manga Downloader — full user guide (chapter-list editi
 5. Adding any new website (Auto Site Analyzer)
 6. Self-check, logs & network repair
 7. Add your own crawler (two ways)
-8. FAQ
-9. Disclaimer
+8. Translate page (English manga → Chinese)
+9. FAQ
+10. Disclaimer
 
 ---
 
@@ -148,7 +149,59 @@ If the program cannot create sockets / reach the internet:
 
 ---
 
-## 8. FAQ
+## 8. Translate page (English manga → Chinese)
+
+**What it does**: takes a downloaded chapter folder (English artwork) and produces the same pages with Chinese text, plus a block-by-block source/target list.
+
+**Requirements**
+
+1. Open-source engine **BallonsTranslator** installed at `tools/Ballonstranslator_win_minium/` (engine + models, ~4 GB, not shipped in this repo).
+2. Our translator modules copied to `<BallonsTranslator>/custom_modules/`: `trans_hybrid.py`, `trans_nllb.py` (`Extensions/BallonsTranslator-custom-modules/`).
+3. `<BallonsTranslator>/config/config.json`: `textdetector=ctd`, `ocr=mit48px`, `inpainter=lama_large_512px`, `translator=Hybrid`, `source=English`, `target=简体中文`.
+4. Offline model `nllb-200-distilled-600M` (~2.4 GB) under `<BallonsTranslator>/data/models/`, or point `NLLB_MODEL_DIR` at it.
+
+Full install/repair notes: `Docs/Translation.md`.
+
+**Steps**
+
+| Step | What happens |
+|---|---|
+| 1. Pick source folder | A chapter folder containing `1.jpg … N.jpg` (or single image) |
+| 2. Output folder (optional) | Empty = auto `"<chapter folder> 汉化版"` next to the source |
+| 3. Text only (optional) | Only exports `中英对照.txt`, skips image compositing (faster, less disk) |
+| 4. Start | Runs in background thread; log window shows page/slice progress; Done dialog when finished |
+
+**Output**
+
+```
+<output>/
+  1.png … N.png         Chinese pages (same base names as the source images)
+  中英对照.txt           per block: source text / translated text
+```
+
+**CLI equivalent**
+
+```bat
+python bt_slice_translate.py --input "<chapter>" --output "<out>"
+python bt_slice_translate.py --input "<chapter>" --text-only
+python bt_slice_translate.py --input "<chapter>" --slice 2000 --overlap 60 --keep-temp
+```
+
+`--keep-temp` keeps `_bt_work/` (slices, per-slice BallonsTranslator output, JSON, logs) — use it when a page still shows English and you want to see which slice failed.
+
+**How it avoids three classic failures**
+
+| Failure | Cause | Handling |
+|---|---|---|
+| English still visible | Whole page downscaled before detection → thin lines missed; punctuation outside the text box never masked | Slice to ~2000px before detection; residual ink detected on the inpainted base and erased by pixel mask |
+| Empty bubbles (bubble frame erased) | Inpainter wipes area, OCR returned nothing | OCR-empty blocks are restored from the original artwork; Chinese is composited only where text was replaced |
+| Translation missing on some blocks | A slice produced no result (engine crashed on exit) | Every missing slice is detected and re-run automatically (up to 3 rounds); leftovers listed in the log |
+
+**Timing reference** (GTX 1050 4 GB): ~1–2 min per 800×9000 page; a 21-page chapter ≈ 25–35 min. CPU only: roughly 10× slower.
+
+---
+
+## 9. FAQ
 
 | Problem | Cause & fix |
 |---|---|
@@ -165,7 +218,7 @@ If the program cannot create sockets / reach the internet:
 
 ---
 
-## 9. Disclaimer
+## 10. Disclaimer
 
 Full disclaimer: `Docs/DISCLAIMER.txt` (English & Chinese). In short:
 

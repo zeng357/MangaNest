@@ -1,0 +1,20 @@
+# MangaNest runtime dependencies (main program)
+# Install:  pip install -r requirements.txt
+DrissionPage>=4.1.0
+aiohttp>=3.9.0
+aiofiles>=23.2.0
+PyExecJS>=1.5.0          # requires Node.js: https://nodejs.org/
+pycryptodome>=3.19.0
+cryptography>=41.0.0
+requests>=2.31.0
+requests-file>=1.5.1
+lxml>=5.0.0
+beautifulsoup4>=4.12.0   # optional (web-page image extraction)
+img2pdf>=0.5.0           # optional (PDF export)
+Pillow>=10.0.0           # required by the Translate page (slice / composite)
+pikepdf>=8.0.0           # optional (EPUB/MOBI export)
+openpyxl>=3.1.0          # optional (xlsx export)
+
+# NOT here: the translation engine itself (BallonsTranslator + torch/cu121 +
+# transformers==4.46.3 + sentencepiece + NLLB model) ships separately under
+# tools/Ballonstranslator_win_minium with its own embedded Python.

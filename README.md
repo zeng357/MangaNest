@@ -48,6 +48,17 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 - Program-integrity lock now only activates **after a password has been set** (no popup on a fresh install); once set, modified program files require the password to unlock
 - Self-check Python-version comparison bug fixed (3.10 no longer misreported as old)
 
+**v1.4.0 new**: 🌐 **mgread.io site + slice-based manga translation** (details: `Docs/Translation.md`)
+- New **🈶 Translate** page: English manga chapters → Chinese, powered by the open-source **BallonsTranslator** engine, orchestrated by `Source/bt_slice_translate.py`
+- **Slice-then-detect**: long-strip pages (800×8000+) are cut into ~2000px slices before text detection, because full-page detection downscales the page and misses thin text lines — the main reason English used to survive on the page
+- Output = Chinese PNG per page + `中英对照.txt` (per-block source/target), or `--text-only` for text alone
+- **Residual-English cleanup**: punctuation outside the detection box is removed by pixel-level ink detection on the inpainted base layer, then the Chinese text layer is composited back with an exclusion mask (`compose_slice` keeps `diff & ~clean_mask`)
+- Site banner / watermark lines (`LUACOMIC…`, `DSC.GG/…`, official-domain notices) are **blanked**, not copied back, and OCR-empty blocks are restored from the original art
+- Offline translation channel: **NLLB-200-distilled-600M** (English→Chinese) with uppercase normalization, repeat-collapse and glossary fixes; hybrid channel auto-switches between online and offline
+- New built-in site **mgread.io** (`sites_data/mgread_crawler.py`): WordPress REST search + detail pre-check, search drops from 30–40s to ~10s per query
+- **Chinese → English search bridging** (`Source/search_translate.py`): CJK keywords are translated into up to 6 shortened variants for English-only sites; all-fail raises a hint instead of silently returning nothing
+- Download channel: retries use **aiohttp first** (requests kept failing on WAF/TLS-resetting hosts), default concurrency raised 3/4 → 6
+
 ---
 
 ## 1. UI Guide
@@ -60,6 +71,7 @@ After launch (double-click `start.bat`), the main window has four pages in the l
 | 📚 **Local Library** | Scan downloaded folders, browse chapters, **check for updates**, download new chapters, verify bad images |
 | 🔄 **Format Converter** | Merge downloaded manga images into e-books (PDF/CBZ/EPUB/MOBI) |
 | 🖼 **Universal Image Downloader** | URL-template / web-page / HTML-source batch image download (built-in usage guide) |
+| 🈶 **Translate** | English manga chapter → Chinese (BallonsTranslator engine; Chinese PNG + `中英对照.txt`) |
 | 🔐 **Password Manager** | Click `🔐 密码管理 ▸` to expand → open the vault manager page (encrypted login containers) |
 | ⚙ **Settings** | Image naming, window, download and browser options |
 
@@ -313,7 +325,32 @@ If the program reports a network-stack failure (socket error WinError 10038) or 
 
 ---
 
-## 8. Disclaimer (see `Docs/DISCLAIMER.txt` for English & Chinese)
+## 8. Manga Translation (English → Chinese)
+
+Full guide: **`Docs/Translation.md`**. Short version:
+
+1. Install the open-source **BallonsTranslator** engine into `tools/Ballonstranslator_win_minium/` (the engine + models are **not** in this repository — only our integration code is).
+2. Copy `Extensions/BallonsTranslator-custom-modules/trans_*.py` into `<BallonsTranslator>/custom_modules/`.
+3. Set `config/config.json` inside BallonsTranslator to `textdetector=ctd`, `ocr=mit48px`, `inpainter=lama_large_512px`, `translator=Hybrid`.
+4. In MangaNest: **🈶 Translate** page → pick a chapter folder → **Start**. Or CLI:
+
+```bat
+python bt_slice_translate.py --input "<chapter folder>" --output "<output folder>"
+python bt_slice_translate.py --input "<chapter folder>" --text-only     # 中英对照.txt only
+```
+
+Output: `<output>/*.png` (Chinese pages, same names as source) + `<output>/中英对照.txt`.
+
+Pipeline: slice (~2000px, cut points snap to blank bands) → BallonsTranslator per slice (GPU, LaMa inpaint + NLLB translation) → missing slices auto re-run → OCR-empty blocks restored from original art → residual-English ink cleanup on the inpainted base → composite Chinese text layer back with an exclusion mask → stitch pages.
+
+Known limits:
+- Translation quality is offline-model grade (NLLB-200-distilled-600M); short exclamations and name puns are occasionally literal.
+- Inpainted flat-colour bubbles can show a faintly different rectangle shade (rare; cosmetic only).
+- CPU-only machines are ~10× slower; GPU ≥4 GB VRAM recommended.
+
+---
+
+## 9. Disclaimer (see `Docs/DISCLAIMER.txt` for English & Chinese)
 
 1. This software is **for personal learning, research and technical exchange only; commercial use is strictly prohibited**.
 2. Downloaded content is owned by the original authors/platforms; **delete within 24 hours** and support the official releases.

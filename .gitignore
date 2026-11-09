@@ -7,6 +7,19 @@ __pycache__/
 cookies/
 startup_diag.log
 
+# 运行时缓存 / 临时产物（不入库）
+comic_translate_cache.json
+search_translate_cache.json
+crash.log
+*.tmp
+_bt_work/
+
+# 翻译引擎与模型（体积约 4GB，自行下载，不入库）
+tools/
+*.ckpt
+*.onnx
+*.bin
+
 # 打包产物
 build/
 dist/
