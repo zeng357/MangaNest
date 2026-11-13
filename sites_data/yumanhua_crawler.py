@@ -287,30 +287,30 @@ class YumanhuaCrawler:
         max_screens = 260          # 安全上限，防止页面高度异常时死循环
         no_grow = 0
         while pos < total and screens < max_screens:
-            # 每屏滚动 70%~100% 视口高度，不会一步跨过整张图
-            pos = min(pos + int(vh * random.uniform(0.7, 1.0)), total)
+            # 每屏滚动 90%~120% 视口高度，不会一步跨过整张图
+            pos = min(pos + int(vh * random.uniform(0.9, 1.2)), total)
             try:
                 chapter_tab.run_js(f'window.scrollTo(0, {pos})')
             except Exception as e:
                 print(f"滚动失败: {e}")
                 break
             # 每屏停留时间：像在看清画面
-            time.sleep(random.uniform(0.8, 1.8))
+            time.sleep(random.uniform(0.35, 0.8))
             screens += 1
 
-            # 每 6~10 屏回翻一点，模拟来回浏览
-            if screens % random.randint(6, 10) == 0 and pos > vh:
+            # 每 10~16 屏回翻一点，模拟来回浏览
+            if screens % random.randint(10, 16) == 0 and pos > vh:
                 back = max(0, pos - int(vh * random.uniform(0.2, 0.4)))
                 try:
                     chapter_tab.run_js(f'window.scrollTo(0, {back})')
-                    time.sleep(random.uniform(1.0, 2.2))
+                    time.sleep(random.uniform(0.5, 1.0))
                 except Exception:
                     pass
                 pos = back
 
-            # 每 5~9 屏多停一次（看图/发呆/等懒加载）
-            if screens % random.randint(5, 9) == 0:
-                time.sleep(random.uniform(3.0, 7.0))
+            # 每 12~18 屏多停一次（看图/发呆/等懒加载）
+            if screens % random.randint(12, 18) == 0:
+                time.sleep(random.uniform(2.5, 5.0))
 
             # 页面可能继续变长（懒加载），同步一次
             try:

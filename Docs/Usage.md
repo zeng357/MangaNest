@@ -142,9 +142,9 @@ Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_c
 
 ```python
 # 翻页（浏览器里，真实滚动事件）
-#   每屏 70~100% 视口高度，每屏停 0.8~1.8s
-#   每 6~10 屏回翻一点（0.2~0.4 视口）并停 1.0~2.2s
-#   每 5~9 屏多停 3~7s；到底后再停 2~4s
+#   每屏 90~120% 视口高度，每屏停 0.35~0.8s
+#   每 10~16 屏回翻一点（0.2~0.4 视口）并停 0.5~1.0s
+#   每 12~18 屏多停 2.5~5s；到底后再停 2~4s
 'chapter_concurrency': 1,       # 一次只处理 1 章
 'download_threads': 1,          # 单章 1 个下载线程
 'download_concurrency': 1,      # 同时只发 1 个图片请求
@@ -156,7 +156,7 @@ Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_c
 'chapter_pause_max': 35.0,
 ```
 
-With these values a 50-page chapter takes roughly **5–8 minutes** (page turning + downloads), so a 94-chapter comic needs several hours. That is intentional: 漫画客 escalated from per-IP throttling to segment bans after high-speed batch runs. If you still hit 403/429/timeouts, stop the batch, enable a proxy exit in ⚙ Settings, and wait before retrying.
+With these values a 50-page chapter takes roughly **6–7 minutes** (page turning + downloads), so a 94-chapter comic needs several hours. That is intentional: 漫画客 escalated from per-IP throttling to segment bans after high-speed batch runs. If you still hit 403/429/timeouts, stop the batch, enable a proxy exit in ⚙ Settings, and wait before retrying.
 
 ---
 
