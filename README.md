@@ -77,6 +77,14 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 - Downloader now understands **site-level chapter pauses**: any crawler can declare `chapter_pause_min` / `chapter_pause_max` in its `CONFIG`, the values are applied for that download run only and reset afterwards (so slowing one site never slows the others)
 - If you still get 403/429 or timeouts, stop the batch, switch to proxy exits (⚙ Settings → 代理设置), and wait before retrying
 
+**v1.4.3 new**: 👤 **漫画客 (yumanhua) now behaves like a person reading** — the 1.4.2 pace was still detected, so this site alone gets a full human-browsing model (other sites are untouched):
+- **Page turning instead of a jump**: the old code fired `scrollTo(0, scrollHeight)` 60 times in a row — the most obvious script fingerprint on a long-strip comic page. Now the browser scrolls **one viewport at a time** (70–100 % of the screen height), pauses **0.8–1.8 s** per screen, scrolls **back up a little** every 6–10 screens (like a person re-checking a panel), takes a **3–7 s** break every 5–9 screens, and stops **2–4 s** at the bottom — every scroll event is produced by the real browser, not simulated
+- **One image at a time, slowly**: 1 chapter at a time, 1 thread, 1 request in flight, **+3.0 s** after each image on top of human jitter → ~3.3–3.9 s per image
+- **Reading breaks**: every **8 images** the downloader pauses **6–14 s** (`download_pause_every` / `download_pause_extra_min` / `download_pause_extra_max`)
+- **15–35 s between chapters** (`chapter_pause_min` / `chapter_pause_max`)
+- Expected cost for this site: **~5–8 min per 50-page chapter** (collection + download), so a 94-chapter comic takes several hours — intentional, and the only reliable way to stay under the site's radar
+- The reading-break mechanism is generic: any crawler can declare `download_pause_every` in its `CONFIG`; sites that don't declare it are unaffected
+
 ---
 
 ## 1. UI Guide

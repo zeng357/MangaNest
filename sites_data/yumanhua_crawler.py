@@ -1,6 +1,7 @@
 import time
 import threading
 import re
+import random
 from urllib.parse import quote
 
 from utils import is_normal_url
@@ -57,14 +58,19 @@ class YumanhuaCrawler:
         # 站点限速（2026-11-13）→ 慢速专用档（2026-11-14 再次被限流后调低）
         # chapter_concurrency: 同时处理的章节数；download_threads: 单章下载线程数上限；
         # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
-        # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）
-        # 该站会按 IP 限流甚至整段封禁，宁可慢也不要触发：单章单线程、每张图 ≈2.3~2.9s、章间停 4~9s
+        # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）；
+        # download_pause_every/extra_min/extra_max: 每下 N 张额外停一次（模拟看几页歇一会儿）
+        # 该站会按 IP 限流甚至整段封禁，宁可慢也不要触发：单章单线程、每张图 ≈3.3~3.9s、
+        # 每 8 张多停 6~14s、章间停 15~35s，翻页也在浏览器里按真人节奏一屏一屏滚
         'chapter_concurrency': 1,
         'download_threads': 1,
         'download_concurrency': 1,
-        'download_delay': 2.0,
-        'chapter_pause_min': 4.0,
-        'chapter_pause_max': 9.0,
+        'download_delay': 3.0,
+        'download_pause_every': 8,
+        'download_pause_extra_min': 6.0,
+        'download_pause_extra_max': 14.0,
+        'chapter_pause_min': 15.0,
+        'chapter_pause_max': 35.0,
     }
 
     def __init__(self, crawler):
@@ -257,8 +263,80 @@ class YumanhuaCrawler:
         return self._fetch_all_chapters(target_comic_tab)
 
     # ---------- 章节图片（下拉式，需滚动触发懒加载） ----------
+    def _human_scroll(self, chapter_tab):
+        """本网站专用：模拟真人一屏一屏地翻页看长条漫。
+
+        整页一次性滑到底是非常典型的脚本特征，风控最容易抓这个。
+        这里按视口高度分步滚动：步长随机、每屏随机停顿、每翻几屏多停一会儿、
+        中途偶尔往回翻一点（真人看画面时的习惯动作），到底后再停一下。
+        滚动事件本身就是真实浏览器产生的，不是伪造的。
+        """
+        try:
+            vh = int(chapter_tab.run_js('return window.innerHeight') or 900)
+        except Exception:
+            vh = 900
+        if vh <= 0:
+            vh = 900
+        try:
+            total = int(chapter_tab.run_js('return document.body.scrollHeight') or 0)
+        except Exception:
+            total = 0
+
+        pos = 0
+        screens = 0
+        max_screens = 260          # 安全上限，防止页面高度异常时死循环
+        no_grow = 0
+        while pos < total and screens < max_screens:
+            # 每屏滚动 70%~100% 视口高度，不会一步跨过整张图
+            pos = min(pos + int(vh * random.uniform(0.7, 1.0)), total)
+            try:
+                chapter_tab.run_js(f'window.scrollTo(0, {pos})')
+            except Exception as e:
+                print(f"滚动失败: {e}")
+                break
+            # 每屏停留时间：像在看清画面
+            time.sleep(random.uniform(0.8, 1.8))
+            screens += 1
+
+            # 每 6~10 屏回翻一点，模拟来回浏览
+            if screens % random.randint(6, 10) == 0 and pos > vh:
+                back = max(0, pos - int(vh * random.uniform(0.2, 0.4)))
+                try:
+                    chapter_tab.run_js(f'window.scrollTo(0, {back})')
+                    time.sleep(random.uniform(1.0, 2.2))
+                except Exception:
+                    pass
+                pos = back
+
+            # 每 5~9 屏多停一次（看图/发呆/等懒加载）
+            if screens % random.randint(5, 9) == 0:
+                time.sleep(random.uniform(3.0, 7.0))
+
+            # 页面可能继续变长（懒加载），同步一次
+            try:
+                h = int(chapter_tab.run_js('return document.body.scrollHeight') or total)
+            except Exception:
+                h = total
+            if h <= total:
+                no_grow += 1
+            else:
+                total = h
+                no_grow = 0
+            if no_grow >= 2 and pos >= total:
+                break
+
+        # 到底后停一下，再回落一点（真人看完会顺手往回划）
+        try:
+            chapter_tab.run_js('window.scrollTo(0, document.body.scrollHeight)')
+            time.sleep(random.uniform(2.0, 4.0))
+            chapter_tab.run_js('window.scrollBy(0, -%d)' % int(vh * random.uniform(0.15, 0.3)))
+            time.sleep(random.uniform(0.8, 1.6))
+        except Exception:
+            pass
+        print(f"模拟真人翻页完成：{screens} 屏")
+
     def get_chapter_image_urls(self, chapter_tab):
-        """先滚动到底把懒加载图片 data-src 刷出来，再收集真实漫画页 URL。
+        """像真人翻页一样滚动，把懒加载图片 data-src 刷出来，再收集真实漫画页 URL。
 
         真漫画页都放在 .chapter-img-box 容器内（CDN 为 *.shimolife.com）；
         页面底部的“猜你喜欢/相关推荐”封面（ecombdimg.com）和 UI 图标（/static/）
@@ -266,22 +344,15 @@ class YumanhuaCrawler:
         """
         herf_list = []
 
+        self._human_scroll(chapter_tab)
+
+        # 兜底：如果翻页后仍有图片没触发懒加载，再做一次到底确认（不再长时间循环）
         try:
-            last_h = -1
-            for _ in range(60):
-                h = chapter_tab.run_js('return document.body.scrollHeight') or 0
+            if int(chapter_tab.run_js("return document.querySelectorAll('.chapter-img-box img[data-src], .chapter-img-box img[src]').length") or 0) == 0:
                 chapter_tab.run_js('window.scrollTo(0, document.body.scrollHeight)')
-                time.sleep(0.4)
-                if h == last_h:
-                    time.sleep(1.2)
-                    h2 = chapter_tab.run_js('return document.body.scrollHeight') or 0
-                    if h2 == h:
-                        break
-                    last_h = h2
-                else:
-                    last_h = h
-        except Exception as e:
-            print(f"滚动触发懒加载出错: {e}")
+                time.sleep(1.5)
+        except Exception:
+            pass
 
         try:
             urls = chapter_tab.run_js(

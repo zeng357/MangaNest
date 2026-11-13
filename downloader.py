@@ -134,6 +134,11 @@ _ACTIVE_DOWNLOAD_CONCURRENCY = 0
 _ACTIVE_DOWNLOAD_THREADS = 0
 _ACTIVE_CHAPTER_PAUSE_MIN = None
 _ACTIVE_CHAPTER_PAUSE_MAX = None
+# 图片阅读停顿：每下 N 张额外停一会儿（站点级配置，模拟真人看几页歇一下）
+_ACTIVE_PAUSE_EVERY = 0
+_ACTIVE_PAUSE_EXTRA_MIN = 0.0
+_ACTIVE_PAUSE_EXTRA_MAX = 0.0
+_IMAGE_SEQ = 0
 
 
 def set_active_download_delay(seconds):
@@ -207,6 +212,81 @@ def reset_active_chapter_pause():
         global _ACTIVE_CHAPTER_PAUSE_MIN, _ACTIVE_CHAPTER_PAUSE_MAX
         _ACTIVE_CHAPTER_PAUSE_MIN = None
         _ACTIVE_CHAPTER_PAUSE_MAX = None
+
+
+def set_active_image_breaks(every=0, extra_min=0.0, extra_max=0.0):
+    """设置「每下 N 张额外停顿」的阅读节奏；every=0 表示关闭。"""
+    global _ACTIVE_PAUSE_EVERY, _ACTIVE_PAUSE_EXTRA_MIN, _ACTIVE_PAUSE_EXTRA_MAX, _IMAGE_SEQ
+    try:
+        every = int(every or 0)
+    except Exception:
+        every = 0
+    def _num(v):
+        try:
+            return max(0.0, float(v or 0))
+        except Exception:
+            return 0.0
+    lo, hi = _num(extra_min), _num(extra_max)
+    if hi < lo:
+        lo, hi = hi, lo
+    with _RATE_LIMIT_LOCK:
+        _ACTIVE_PAUSE_EVERY = max(0, every)
+        _ACTIVE_PAUSE_EXTRA_MIN = lo
+        _ACTIVE_PAUSE_EXTRA_MAX = hi
+        _IMAGE_SEQ = 0
+
+
+def get_active_image_breaks():
+    with _RATE_LIMIT_LOCK:
+        return _ACTIVE_PAUSE_EVERY, _ACTIVE_PAUSE_EXTRA_MIN, _ACTIVE_PAUSE_EXTRA_MAX
+
+
+def reset_active_image_breaks():
+    set_active_image_breaks(0, 0.0, 0.0)
+
+
+def image_reading_break():
+    """每下满 N 张图后额外停顿一次（模拟真人看几页歇一下），返回实际停顿秒数。"""
+    global _IMAGE_SEQ
+    if not human_mode_enabled():
+        return 0.0
+    with _RATE_LIMIT_LOCK:
+        every = _ACTIVE_PAUSE_EVERY
+        if not every:
+            return 0.0
+        _IMAGE_SEQ += 1
+        if _IMAGE_SEQ % every != 0:
+            return 0.0
+        lo, hi = _ACTIVE_PAUSE_EXTRA_MIN, _ACTIVE_PAUSE_EXTRA_MAX
+    if hi < lo:
+        lo, hi = hi, lo
+    pause = random.uniform(lo, hi)
+    if pause > 0:
+        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，按真人节奏歇 {pause:.1f}s")
+        time.sleep(pause)
+    return pause
+
+
+async def image_reading_break_async():
+    """协程版本的阅读停顿。"""
+    global _IMAGE_SEQ
+    if not human_mode_enabled():
+        return 0.0
+    with _RATE_LIMIT_LOCK:
+        every = _ACTIVE_PAUSE_EVERY
+        if not every:
+            return 0.0
+        _IMAGE_SEQ += 1
+        if _IMAGE_SEQ % every != 0:
+            return 0.0
+        lo, hi = _ACTIVE_PAUSE_EXTRA_MIN, _ACTIVE_PAUSE_EXTRA_MAX
+    if hi < lo:
+        lo, hi = hi, lo
+    pause = random.uniform(lo, hi)
+    if pause > 0:
+        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，按真人节奏歇 {pause:.1f}s")
+        await asyncio.sleep(pause)
+    return pause
 
 
 def get_active_proxy():
@@ -1282,6 +1362,8 @@ async def download_batch_coroutine(images_to_download, concurrent_limit, progres
                 failed_list.append(failed_info)
             # 模拟人工：0.3s 基础间隔 + 站点 download_delay + 随机抖动
             await asyncio.sleep(human_wait(0.3 + get_active_download_delay()))
+            # 站点级阅读停顿：每下 N 张多歇一会儿
+            await image_reading_break_async()
 
     tasks = [
         download_with_semaphore(url, index, folder, chapter_num)
@@ -1365,6 +1447,8 @@ def download_batch_thread_only(images_to_download, thread_count=8, progress_call
         success, info = download_with_requests(url, file_path, timeout=timeout)
         # 模拟人工：每张图片后随机等待（关闭 HUMAN_MODE 时按站点固定延时）
         time.sleep(human_wait(get_active_download_delay()))
+        # 站点级阅读停顿：每下 N 张多歇一会儿
+        image_reading_break()
 
         if success:
             print(f"  ✓ 第{index}张下载成功")
@@ -1625,6 +1709,14 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
             site_delay = 0.4
     set_active_download_delay(site_delay)
     set_active_download_limits(site_conc, site_threads)
+    # 站点级阅读停顿：每下 N 张额外歇一会儿（漫画客这类站用来模拟真人看几页歇一下）
+    reset_active_image_breaks()
+    site_pause_every = site_cfg.get('download_pause_every') or 0
+    if site_pause_every:
+        extra_lo = site_cfg.get('download_pause_extra_min') or 0
+        extra_hi = site_cfg.get('download_pause_extra_max') or extra_lo
+        set_active_image_breaks(site_pause_every, extra_lo, extra_hi)
+        print(f"站点专属阅读节奏：每 {site_pause_every} 张额外停 {float(extra_lo):.1f}~{float(extra_hi):.1f}s")
     # 站点专属章节停顿（该站被限流后单独放慢，例如漫画客）
     site_pause_min = site_cfg.get('chapter_pause_min')
     site_pause_max = site_cfg.get('chapter_pause_max')
@@ -1746,6 +1838,7 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
         set_active_download_delay(0)
         set_active_download_limits(0, 0)
         reset_active_chapter_pause()
+        reset_active_image_breaks()
         set_active_proxy_pool(None)
         return all_failed, failed_json_path, False  # 有失败图片，不压缩
     else:
