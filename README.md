@@ -70,6 +70,13 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 - **漫画客 (yumanhua) chapter list fixed**: the detail-page filter regex only matched titles starting with a digit, so chapters named `第95话 …` were dropped — the list stopped at 74 chapters. Now title patterns `第N话/章` and `总N` both match, the latest 20 DOM chapters are merged with the 75 from `/morechapter`, and notice rows (`预告`) are filtered only when the title carries no chapter number → **94 chapters** for the same comic
 - **Human-like pacing on every site** (always on, `config.py → HUMAN_MODE`): per-image random delay, chapter-to-chapter random pause, concurrency capped at 3 / threads at 2, rotating browser User-Agent, and the browser pauses 0.6–1.6 s after every page navigation — downloads look like a person clicking through chapters instead of a script hammering the site, which is what triggers bans in the first place. Turn `HUMAN_MODE = False` if you want the old full-speed behaviour
 
+**v1.4.2 new**: 🐢 **Dedicated slow profile for 漫画客 (yumanhua)** — the site escalated from per-IP throttling to whole-segment bans, so this site now runs far below the global human caps:
+- **One chapter at a time** (`chapter_concurrency: 1`), **one download thread**, **one image request in flight** (`download_threads: 1` / `download_concurrency: 1`)
+- **+2.0 s after every image** on top of the random human jitter → effective ~2.3–2.9 s per image, ~2–3 min per 50-page chapter
+- **4–9 s pause between chapters** (`chapter_pause_min` / `chapter_pause_max`)
+- Downloader now understands **site-level chapter pauses**: any crawler can declare `chapter_pause_min` / `chapter_pause_max` in its `CONFIG`, the values are applied for that download run only and reset afterwards (so slowing one site never slows the others)
+- If you still get 403/429 or timeouts, stop the batch, switch to proxy exits (⚙ Settings → 代理设置), and wait before retrying
+
 ---
 
 ## 1. UI Guide

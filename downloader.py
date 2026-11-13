@@ -41,15 +41,21 @@ def human_wait(base=0.0):
 
 
 def human_pause():
-    """章节之间的随机停顿，模拟翻页/阅读间隔。"""
+    """章节之间的随机停顿，模拟翻页/阅读间隔。
+
+    站点 CONFIG 可用 chapter_pause_min / chapter_pause_max 覆盖默认停顿，
+    用于「该站被限流后单独降速」（例如漫画客）。
+    """
     if not human_mode_enabled():
         return
-    try:
-        import config
-        lo = float(getattr(config, 'HUMAN_CHAPTER_PAUSE_MIN', 1.5))
-        hi = float(getattr(config, 'HUMAN_CHAPTER_PAUSE_MAX', 4.0))
-    except Exception:
-        lo, hi = 1.5, 4.0
+    lo, hi = get_active_chapter_pause()
+    if lo is None or hi is None:
+        try:
+            import config
+            lo = float(getattr(config, 'HUMAN_CHAPTER_PAUSE_MIN', 1.5))
+            hi = float(getattr(config, 'HUMAN_CHAPTER_PAUSE_MAX', 4.0))
+        except Exception:
+            lo, hi = 1.5, 4.0
     if hi < lo:
         lo, hi = hi, lo
     time.sleep(random.uniform(lo, hi))
@@ -126,6 +132,8 @@ _RATE_LIMIT_LOCK = threading.Lock()
 _ACTIVE_DOWNLOAD_DELAY = 0.0
 _ACTIVE_DOWNLOAD_CONCURRENCY = 0
 _ACTIVE_DOWNLOAD_THREADS = 0
+_ACTIVE_CHAPTER_PAUSE_MIN = None
+_ACTIVE_CHAPTER_PAUSE_MAX = None
 
 
 def set_active_download_delay(seconds):
@@ -168,6 +176,37 @@ def get_active_download_concurrency():
 def get_active_download_threads():
     with _RATE_LIMIT_LOCK:
         return _ACTIVE_DOWNLOAD_THREADS
+
+
+def set_active_chapter_pause(min_seconds=None, max_seconds=None):
+    """设置当前站点章节之间的停顿区间（秒）；传 None 表示回退全局默认。"""
+    global _ACTIVE_CHAPTER_PAUSE_MIN, _ACTIVE_CHAPTER_PAUSE_MAX
+    def _num(v):
+        if v is None:
+            return None
+        try:
+            return max(0.0, float(v))
+        except Exception:
+            return None
+    lo, hi = _num(min_seconds), _num(max_seconds)
+    if lo is not None and hi is not None and hi < lo:
+        lo, hi = hi, lo
+    with _RATE_LIMIT_LOCK:
+        _ACTIVE_CHAPTER_PAUSE_MIN = lo
+        _ACTIVE_CHAPTER_PAUSE_MAX = hi
+
+
+def get_active_chapter_pause():
+    """返回当前站点停顿区间 (min, max)；未设置为 (None, None)。"""
+    with _RATE_LIMIT_LOCK:
+        return _ACTIVE_CHAPTER_PAUSE_MIN, _ACTIVE_CHAPTER_PAUSE_MAX
+
+
+def reset_active_chapter_pause():
+    with _RATE_LIMIT_LOCK:
+        global _ACTIVE_CHAPTER_PAUSE_MIN, _ACTIVE_CHAPTER_PAUSE_MAX
+        _ACTIVE_CHAPTER_PAUSE_MIN = None
+        _ACTIVE_CHAPTER_PAUSE_MAX = None
 
 
 def get_active_proxy():
@@ -1586,6 +1625,16 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
             site_delay = 0.4
     set_active_download_delay(site_delay)
     set_active_download_limits(site_conc, site_threads)
+    # 站点专属章节停顿（该站被限流后单独放慢，例如漫画客）
+    site_pause_min = site_cfg.get('chapter_pause_min')
+    site_pause_max = site_cfg.get('chapter_pause_max')
+    reset_active_chapter_pause()
+    if human_mode_enabled() and (site_pause_min or site_pause_max):
+        set_active_chapter_pause(site_pause_min, site_pause_max)
+        lo, hi = get_active_chapter_pause()
+        if lo is None:
+            lo, hi = 1.5, 4.0
+        print(f"站点专属慢速：章节间停顿 {lo:.1f}~{hi:.1f}s")
     if human_mode_enabled():
         print(f"模拟人工模式：单章并发 {site_conc}，线程 {site_threads}，每张图随机间隔 "
               f"{site_delay + 0.3:.1f}~{site_delay + 0.9:.1f}s，章节间随机停顿")
@@ -1696,6 +1745,7 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
         set_active_decryptor(None)
         set_active_download_delay(0)
         set_active_download_limits(0, 0)
+        reset_active_chapter_pause()
         set_active_proxy_pool(None)
         return all_failed, failed_json_path, False  # 有失败图片，不压缩
     else:
@@ -1716,6 +1766,7 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     set_active_decryptor(None)
     set_active_download_delay(0)
     set_active_download_limits(0, 0)
+    reset_active_chapter_pause()
     set_active_proxy_pool(None)
     return [], None, True  # 全部成功，可以压缩
 

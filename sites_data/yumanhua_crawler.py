@@ -54,13 +54,17 @@ class YumanhuaCrawler:
         'chapter_group_size': None,
         # 图片在 ecombdimg.com / shimolife.com 等 CDN，与站点不同域，带 Referer 防防盗链
         'image_referer': 'http://yumanhua.com/',
-        # 站点限速（2026-11-13）：站点/CDN 对高频请求有限流，下载不再追求满并发。
+        # 站点限速（2026-11-13）→ 慢速专用档（2026-11-14 再次被限流后调低）
         # chapter_concurrency: 同时处理的章节数；download_threads: 单章下载线程数上限；
-        # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数
-        'chapter_concurrency': 2,
+        # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
+        # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）
+        # 该站会按 IP 限流甚至整段封禁，宁可慢也不要触发：单章单线程、每张图 ≈2.3~2.9s、章间停 4~9s
+        'chapter_concurrency': 1,
         'download_threads': 1,
-        'download_concurrency': 2,
-        'download_delay': 0.5,
+        'download_concurrency': 1,
+        'download_delay': 2.0,
+        'chapter_pause_min': 4.0,
+        'chapter_pause_max': 9.0,
     }
 
     def __init__(self, crawler):

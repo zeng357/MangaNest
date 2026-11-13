@@ -136,6 +136,19 @@ How rotation works: each image request takes the next exit (up to `proxy_max_tri
 
 Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_concurrency`, `download_threads`, `download_concurrency`, `download_delay`) — the effective values are the **stricter** of the two, so a site can be slowed further but never sped past the human caps. Set `HUMAN_MODE = False` to restore the old full-speed behaviour.
 
+**Site-level chapter pause (v1.4.2)**: a crawler may also set `chapter_pause_min` / `chapter_pause_max` (seconds). The downloader applies them for that site only and resets them when the run ends, so one slow site never slows the others. Example — 漫画客 (`sites_data/yumanhua_crawler.py`), the dedicated slow profile:
+
+```python
+'chapter_concurrency': 1,   # 一次只处理 1 章
+'download_threads': 1,      # 单章 1 个下载线程
+'download_concurrency': 1,  # 同时只发 1 个图片请求
+'download_delay': 2.0,      # 每张图再加 2.0s（叠加随机抖动 ≈2.3~2.9s/张）
+'chapter_pause_min': 4.0,   # 章间停 4~9s
+'chapter_pause_max': 9.0,
+```
+
+With these values a 50-page chapter takes roughly 2–3 minutes. That is intentional: 漫画客 escalated from per-IP throttling to segment bans after high-speed batch runs. If you still hit 403/429/timeouts, stop the batch, enable a proxy exit in ⚙ Settings, and wait before retrying.
+
 ---
 
 ## 5. Adding any new website (Auto Site Analyzer)
