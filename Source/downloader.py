@@ -11,6 +11,63 @@ import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor
 import winreg
+import random
+
+
+# ==================== 模拟人工（全站默认） ====================
+def human_mode_enabled():
+    """读取 config.HUMAN_MODE（缺省开启：宁可慢一点，也别触发站点封禁）。"""
+    try:
+        import config
+        return bool(getattr(config, 'HUMAN_MODE', True))
+    except Exception:
+        return True
+
+
+def human_wait(base=0.0):
+    """模拟人工等待：基础延时 + 随机抖动（关闭模拟人工时原样返回基础延时）。"""
+    base = max(0.0, float(base or 0.0))
+    if not human_mode_enabled():
+        return base
+    try:
+        import config
+        lo = float(getattr(config, 'HUMAN_DELAY_MIN', 0.3))
+        hi = float(getattr(config, 'HUMAN_DELAY_MAX', 0.9))
+    except Exception:
+        lo, hi = 0.3, 0.9
+    if hi < lo:
+        lo, hi = hi, lo
+    return base + random.uniform(lo, hi)
+
+
+def human_pause():
+    """章节之间的随机停顿，模拟翻页/阅读间隔。"""
+    if not human_mode_enabled():
+        return
+    try:
+        import config
+        lo = float(getattr(config, 'HUMAN_CHAPTER_PAUSE_MIN', 1.5))
+        hi = float(getattr(config, 'HUMAN_CHAPTER_PAUSE_MAX', 4.0))
+    except Exception:
+        lo, hi = 1.5, 4.0
+    if hi < lo:
+        lo, hi = hi, lo
+    time.sleep(random.uniform(lo, hi))
+
+
+def human_limits(concurrency, threads):
+    """按模拟人工策略收紧并发/线程上限。"""
+    if not human_mode_enabled():
+        return concurrency, threads
+    try:
+        import config
+        max_conc = int(getattr(config, 'HUMAN_MAX_CONCURRENCY', 3))
+        max_threads = int(getattr(config, 'HUMAN_MAX_THREADS', 2))
+    except Exception:
+        max_conc, max_threads = 3, 2
+    concurrency = min(concurrency or max_conc, max_conc)
+    threads = min(threads or max_threads, max_threads)
+    return concurrency, threads
 
 
 def get_system_proxy():
@@ -61,6 +118,57 @@ _SYSTEM_PROXY = None
 _SYSTEM_PROXY_CHECKED = False
 _SYSTEM_PROXY_LOCK = threading.Lock()
 
+# ---------- 站点级限速（按站点CONFIG生效，默认不限） ----------
+# download_delay:     每张图下载完后的额外等待秒数
+# download_concurrency: 单章图片并发上限（0=不限制）
+# download_threads:     章节图片下载线程数上限（0=不限制）
+_RATE_LIMIT_LOCK = threading.Lock()
+_ACTIVE_DOWNLOAD_DELAY = 0.0
+_ACTIVE_DOWNLOAD_CONCURRENCY = 0
+_ACTIVE_DOWNLOAD_THREADS = 0
+
+
+def set_active_download_delay(seconds):
+    """设置当前站点的图片下载间隔（秒），0 表示不额外等待。"""
+    global _ACTIVE_DOWNLOAD_DELAY
+    try:
+        seconds = float(seconds or 0)
+    except Exception:
+        seconds = 0.0
+    with _RATE_LIMIT_LOCK:
+        _ACTIVE_DOWNLOAD_DELAY = max(0.0, seconds)
+
+
+def set_active_download_limits(concurrency=0, threads=0):
+    """设置当前站点的图片并发/线程上限，0 表示不限制。"""
+    global _ACTIVE_DOWNLOAD_CONCURRENCY, _ACTIVE_DOWNLOAD_THREADS
+    try:
+        concurrency = int(concurrency or 0)
+    except Exception:
+        concurrency = 0
+    try:
+        threads = int(threads or 0)
+    except Exception:
+        threads = 0
+    with _RATE_LIMIT_LOCK:
+        _ACTIVE_DOWNLOAD_CONCURRENCY = max(0, concurrency)
+        _ACTIVE_DOWNLOAD_THREADS = max(0, threads)
+
+
+def get_active_download_delay():
+    with _RATE_LIMIT_LOCK:
+        return _ACTIVE_DOWNLOAD_DELAY
+
+
+def get_active_download_concurrency():
+    with _RATE_LIMIT_LOCK:
+        return _ACTIVE_DOWNLOAD_CONCURRENCY
+
+
+def get_active_download_threads():
+    with _RATE_LIMIT_LOCK:
+        return _ACTIVE_DOWNLOAD_THREADS
+
 
 def get_active_proxy():
     """获取当前系统代理（惰性检测+缓存，线程安全）
@@ -79,6 +187,23 @@ def get_active_proxy():
                 else:
                     print("未检测到系统代理，将直连下载")
     return _SYSTEM_PROXY
+
+
+# ---------- 代理池（config.json 里 proxy_enabled=true 时启用） ----------
+_PROXY_POOL_LOCK = threading.Lock()
+_ACTIVE_PROXY_POOL = None
+
+
+def set_active_proxy_pool(pool):
+    """设置当前下载流程使用的代理池；None 表示不启用（走系统代理/直连）。"""
+    global _ACTIVE_PROXY_POOL
+    with _PROXY_POOL_LOCK:
+        _ACTIVE_PROXY_POOL = pool
+
+
+def get_active_proxy_pool():
+    with _PROXY_POOL_LOCK:
+        return _ACTIVE_PROXY_POOL
 
 
 # 活跃Referer：部分CDN有防盗链（缺Referer返回500或重定向到占位图），
@@ -231,7 +356,20 @@ def _build_decryptor(site_crawler):
 
 
 def _build_download_headers():
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    if human_mode_enabled():
+        try:
+            import config
+            pool = getattr(config, 'HUMAN_UA_POOL', None)
+            if pool:
+                ua = random.choice(pool)
+        except Exception:
+            pass
+    headers = {
+        'User-Agent': ua,
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    }
     if _ACTIVE_REFERER:
         headers['Referer'] = _ACTIVE_REFERER
     return headers
@@ -888,12 +1026,23 @@ def is_browser_render_site(site_crawler):
 
 
 async def download_with_aiohttp(url, file_path, timeout=10, proxy=None):
-    """使用aiohttp下载（代理返回5xx时自动直连重试一次：部分CDN拒绝代理出口IP）"""
-    # 使用传入的代理或全局代理（惰性检测）
-    active_proxy = get_active_proxy()
-    proxy_url = proxy or (active_proxy.get('https') if active_proxy else None)
-    attempts = [proxy_url, None] if proxy_url else [None]
+    """使用aiohttp下载。
+
+    出口选择优先级：显式 proxy 参数 > 代理池（启用时按请求轮换）> 系统代理 > 直连。
+    代理池模式下单张图会依次换不同出口重试，全失败后按配置决定是否回退直连。
+    """
+    pool = None if proxy else get_active_proxy_pool()
+    if proxy:
+        attempts = [proxy]
+    elif pool is not None:
+        attempts = pool.get_candidates()
+    else:
+        active_proxy = get_active_proxy()
+        proxy_url = active_proxy.get('https') if active_proxy else None
+        attempts = [proxy_url, None] if proxy_url else [None]
+
     last_info = "未知错误"
+    limit_info = ""
 
     for attempt_proxy in attempts:
         try:
@@ -916,40 +1065,70 @@ async def download_with_aiohttp(url, file_path, timeout=10, proxy=None):
                         if _ACTIVE_DECRYPTOR:
                             content = _decrypt_content(content)
                             if content is None:
+                                if pool is not None:
+                                    pool.report(attempt_proxy, False)
                                 return False, "解密失败"
                         # 只要有内容就算成功（即使是空白图片）
                         if len(content) > 0:
                             async with aiofiles.open(file_path, 'wb') as f:
                                 await f.write(content)
+                            if pool is not None:
+                                pool.report(attempt_proxy, True)
                             return True, len(content)
                         else:
-                            return False, "内容为空"
+                            if pool is not None:
+                                pool.report(attempt_proxy, False)
+                            last_info = "内容为空"
+                            continue
                     else:
+                        if response.status in (403, 429):
+                            limit_info = (f"被站点限流(状态码{response.status})，"
+                                          f"已降速仍失败，可再调小线程数或加大间隔")
+                            last_info = limit_info
+                            if pool is not None:
+                                pool.report(attempt_proxy, False)
+                            continue
                         if 500 <= response.status < 600:
-                            last_info = f"服务端错误(状态码{response.status})，源站文件可能已损坏，非客户端问题"
-                            if attempt_proxy:
-                                # 可能是CDN拒绝代理出口IP，改用直连重试
-                                continue
-                            return False, last_info
-                        return False, f"状态码{response.status}"
+                            last_info = (f"服务端错误(状态码{response.status})，"
+                                         f"源站文件可能已损坏，非客户端问题")
+                            if pool is not None:
+                                pool.report(attempt_proxy, False)
+                            continue
+                        last_info = f"状态码{response.status}"
+                        if pool is not None:
+                            pool.report(attempt_proxy, False)
+                        continue
         except asyncio.TimeoutError:
             last_info = "超时"
-            if attempt_proxy:
-                continue
+            if pool is not None:
+                pool.report(attempt_proxy, False)
+            continue
         except Exception as e:
             last_info = str(e)[:50]
-            if attempt_proxy:
-                continue
+            if pool is not None:
+                pool.report(attempt_proxy, False)
+            continue
 
-    return False, last_info
+    return False, (limit_info or last_info)
 
 
 def download_with_requests(url, file_path, timeout=10, proxy=None):
-    """使用requests下载（同步，代理返回5xx时自动直连重试一次）"""
-    # 使用传入的代理或全局代理（惰性检测）
-    proxies = proxy or get_active_proxy()
-    attempts = [proxies, {'http': None, 'https': None}] if proxies else [None]
+    """使用requests下载（同步）。
+
+    出口选择与 aiohttp 通道一致：显式 proxy > 代理池轮换 > 系统代理 > 直连。
+    """
+    pool = None if proxy else get_active_proxy_pool()
+    if proxy:
+        attempts = [{'http': proxy, 'https': proxy}]
+    elif pool is not None:
+        cands = pool.get_candidates()
+        attempts = [({'http': p, 'https': p} if p else None) for p in cands]
+    else:
+        proxies = get_active_proxy()
+        attempts = [proxies, {'http': None, 'https': None}] if proxies else [None]
+
     last_info = "未知错误"
+    limit_info = ""
 
     for attempt_proxies in attempts:
         try:
@@ -958,13 +1137,23 @@ def download_with_requests(url, file_path, timeout=10, proxy=None):
             try:
                 response.raise_for_status()
             except requests.HTTPError:
+                if response.status_code in (403, 429):
+                    limit_info = (f"被站点限流(状态码{response.status_code})，"
+                                  f"已降速仍失败，可再调小线程数或加大间隔")
+                    last_info = limit_info
+                    if pool is not None:
+                        pool.report((attempt_proxies or {}).get('http'), False)
+                    continue
                 if 500 <= response.status_code < 600:
-                    last_info = f"服务端错误(状态码{response.status_code})，源站文件可能已损坏，非客户端问题"
-                    if attempt_proxies:
-                        # 可能是CDN拒绝代理出口IP，改用直连重试
-                        continue
-                    return False, last_info
-                return False, f"状态码{response.status_code}"
+                    last_info = (f"服务端错误(状态码{response.status_code})，"
+                                 f"源站文件可能已损坏，非客户端问题")
+                    if pool is not None:
+                        pool.report((attempt_proxies or {}).get('http'), False)
+                    continue
+                last_info = f"状态码{response.status_code}"
+                if pool is not None:
+                    pool.report((attempt_proxies or {}).get('http'), False)
+                continue
 
             with open(file_path, 'wb') as f:
                 for chunk in response.iter_content(1024):
@@ -976,6 +1165,8 @@ def download_with_requests(url, file_path, timeout=10, proxy=None):
                     raw = f.read()
                 decrypted = _decrypt_content(raw)
                 if decrypted is None:
+                    if pool is not None:
+                        pool.report((attempt_proxies or {}).get('http'), False)
                     return False, "解密失败"
                 with open(file_path, 'wb') as f:
                     f.write(decrypted)
@@ -983,15 +1174,21 @@ def download_with_requests(url, file_path, timeout=10, proxy=None):
             # 只要有内容就算成功（即使是空白图片）
             file_size = os.path.getsize(file_path)
             if file_size > 0:
+                if pool is not None:
+                    pool.report((attempt_proxies or {}).get('http'), True)
                 return True, file_size
             else:
-                return False, "内容为空"
+                if pool is not None:
+                    pool.report((attempt_proxies or {}).get('http'), False)
+                last_info = "内容为空"
+                continue
         except Exception as e:
             last_info = str(e)[:50]
-            if attempt_proxies:
-                continue
+            if pool is not None:
+                pool.report((attempt_proxies or {}).get('http'), False)
+            continue
 
-    return False, last_info
+    return False, (limit_info or last_info)
 
 
 async def download_image(url, index, folder_name, chapter_num, progress_callback=None, timeout=10):
@@ -1044,7 +1241,8 @@ async def download_batch_coroutine(images_to_download, concurrent_limit, progres
             failed_info = await download_image(url, index, folder_name, chapter_num, progress_callback, timeout=timeout)
             if failed_info:
                 failed_list.append(failed_info)
-            await asyncio.sleep(0.3)
+            # 模拟人工：0.3s 基础间隔 + 站点 download_delay + 随机抖动
+            await asyncio.sleep(human_wait(0.3 + get_active_download_delay()))
 
     tasks = [
         download_with_semaphore(url, index, folder, chapter_num)
@@ -1126,7 +1324,9 @@ def download_batch_thread_only(images_to_download, thread_count=8, progress_call
         
         # 使用requests直接下载
         success, info = download_with_requests(url, file_path, timeout=timeout)
-        
+        # 模拟人工：每张图片后随机等待（关闭 HUMAN_MODE 时按站点固定延时）
+        time.sleep(human_wait(get_active_download_delay()))
+
         if success:
             print(f"  ✓ 第{index}张下载成功")
             if progress_callback:
@@ -1244,6 +1444,14 @@ async def download_chapter_images(herf_list, folder_name, chapter_num, concurren
     """
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
+
+    # 站点级并发上限（CONFIG.download_concurrency / download_threads）
+    cap_conc = get_active_download_concurrency()
+    if cap_conc and concurrent_limit > cap_conc:
+        concurrent_limit = cap_conc
+    cap_threads = get_active_download_threads()
+    if cap_threads and thread_count > cap_threads:
+        thread_count = cap_threads
 
     print(f"\n[章节{chapter_num}] 开始下载 {len(herf_list)} 张图片...")
     start_time = time.time()
@@ -1365,6 +1573,40 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     # 按站点CONFIG设置Referer（CDN防盗链站点需要），流程结束后清除
     set_active_referer(getattr(site_crawler, 'CONFIG', {}).get('image_referer') if site_crawler else None)
 
+    # 按站点CONFIG设置限速（防站点限流/封IP），流程结束后恢复默认
+    site_cfg = (getattr(site_crawler, 'CONFIG', {}) or {}) if site_crawler else {}
+    site_delay = site_cfg.get('download_delay', 0)
+    site_conc = site_cfg.get('download_concurrency', 0)
+    site_threads = site_cfg.get('download_threads', 0)
+    if human_mode_enabled():
+        # 模拟人工：全站统一收紧并发/线程，并保证每张图至少有一点随机间隔
+        site_conc, site_threads = human_limits(site_conc or download_concurrency, site_threads or download_thread_count)
+        download_concurrency, download_thread_count = site_conc, site_threads
+        if not site_delay:
+            site_delay = 0.4
+    set_active_download_delay(site_delay)
+    set_active_download_limits(site_conc, site_threads)
+    if human_mode_enabled():
+        print(f"模拟人工模式：单章并发 {site_conc}，线程 {site_threads}，每张图随机间隔 "
+              f"{site_delay + 0.3:.1f}~{site_delay + 0.9:.1f}s，章节间随机停顿")
+    elif site_delay or site_conc or site_threads:
+        print(f"站点限速已启用：图片间隔 +{site_delay}s，单章并发上限 {site_conc or '不限'}，"
+              f"下载线程上限 {site_threads or '不限'}")
+
+    # 代理池：config.json 里 proxy_enabled=true 时，图片下载按请求轮换代理出口
+    try:
+        import proxy_pool
+        pool = proxy_pool.get_pool()
+        if pool is not None:
+            set_active_proxy_pool(pool)
+            print(f"图片下载走代理池（{pool.size()} 个出口，"
+                  f"全部失败{'回退直连' if pool.allow_direct else '直接报错'}）")
+        else:
+            set_active_proxy_pool(None)
+    except Exception as e:
+        print(f"代理池初始化失败，本次直连下载: {e}")
+        set_active_proxy_pool(None)
+
     # 按站点CONFIG设置解密器（图片加密可复现的站点），流程结束后清除
     decrypt_cfg = getattr(site_crawler, 'CONFIG', {}).get('decrypt') if site_crawler else None
     if decrypt_cfg:
@@ -1406,6 +1648,8 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
             failed = await download_chapter_images(herf_list, folder_name, chapter_num, concurrent_limit, download_thread_count, use_thread_coroutine, progress_callback, use_thread_only, timeout=first_timeout)
             # 收集所有失败图片
             all_failed.extend(failed)
+            # 模拟人工：章节之间随机停顿，避免连续高速抓取被判定为机器人
+            human_pause()
 
     total_elapsed = time.time() - total_start
     print(f"\n{'='*50}")
@@ -1420,6 +1664,11 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
             print(f"\n{'='*50}")
             print(f"第 {round_no}/{retry_rounds} 轮自动重试: {len(all_failed)} 张")
             print(f"{'='*50}")
+
+            # 重试前冷却：站点限流时立刻重试只会继续失败（间隔随轮次递增）
+            cooldown = 2.0 + 3.0 * round_no
+            print(f"冷却 {cooldown:.1f} 秒后开始重试...")
+            time.sleep(cooldown)
 
             still_failed = retry_failed_batch(all_failed, progress_callback,
                                               max_workers=download_thread_count, timeout=retry_timeout)
@@ -1445,6 +1694,9 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
         print(f"{'='*50}")
         set_active_referer(None)
         set_active_decryptor(None)
+        set_active_download_delay(0)
+        set_active_download_limits(0, 0)
+        set_active_proxy_pool(None)
         return all_failed, failed_json_path, False  # 有失败图片，不压缩
     else:
         # 全部成功，删除JSON文件
@@ -1462,6 +1714,9 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     print(f"{'='*50}")
     set_active_referer(None)
     set_active_decryptor(None)
+    set_active_download_delay(0)
+    set_active_download_limits(0, 0)
+    set_active_proxy_pool(None)
     return [], None, True  # 全部成功，可以压缩
 
 
@@ -1537,6 +1792,17 @@ async def download_from_failed_json(json_path, concurrent_limit=6, download_thre
             set_active_referer(get_site_config(data['site_name']).get('image_referer'))
     except Exception:
         pass
+
+    # 代理池：失败重下同样走代理（config.json 开启时）
+    try:
+        import proxy_pool
+        pool = proxy_pool.get_pool()
+        set_active_proxy_pool(pool)
+        if pool is not None:
+            print(f"失败重下走代理池（{pool.size()} 个出口）")
+    except Exception as e:
+        print(f"代理池初始化失败，本次直连重下: {e}")
+        set_active_proxy_pool(None)
     
     if not failed_images:
         print("没有需要重试的图片")
@@ -1640,6 +1906,7 @@ async def download_from_failed_json(json_path, concurrent_limit=6, download_thre
         print(f"{'='*50}")
         set_active_referer(None)
         set_active_decryptor(None)
+        set_active_proxy_pool(None)
         return all_failed, False
     else:
         # 全部成功，删除失败列表文件
@@ -1656,6 +1923,7 @@ async def download_from_failed_json(json_path, concurrent_limit=6, download_thre
     print(f"{'='*50}")
     set_active_referer(None)
     set_active_decryptor(None)
+    set_active_proxy_pool(None)
     return [], True
 
 

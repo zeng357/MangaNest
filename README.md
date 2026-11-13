@@ -59,6 +59,17 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 - **Chinese → English search bridging** (`Source/search_translate.py`): CJK keywords are translated into up to 6 shortened variants for English-only sites; all-fail raises a hint instead of silently returning nothing
 - Download channel: retries use **aiohttp first** (requests kept failing on WAF/TLS-resetting hosts), default concurrency raised 3/4 → 6
 
+**v1.4.1 new**: 🛡️ **Proxy pool (hide your real IP) + site rate limiting + 漫画客 chapter fix**
+- **Proxy settings** (⚙ Settings → 代理设置): route **both image downloads and the browser** through proxy exits, so the site never sees your real IP
+  - Sources: local proxy list file (`proxies.txt`, one proxy per line) or a **subscription link** (plain text / base64)
+  - Image downloads **rotate exits per request** (`proxy_max_tries`, default 3); an exit that fails 3 times in a row is cooled down for 90 s
+  - Browser (search / detail / chapter pages) uses one fixed exit (`proxy_browser`, e.g. `http://127.0.0.1:7890`); left empty → first proxy in the list
+  - **Fallback to direct connection** when every exit fails (`proxy_allow_direct`, default on) — turn it off if you never want your real IP to touch the site
+  - Accepted formats: `http://host:port`, `http://user:pass@host:port`, `host:port`, `host:port:user:pass`, `socks5://host:port` (SOCKS5 is browser-only; images need an HTTP/HTTPS proxy)
+- **Per-site rate limiting**: chapter-page concurrency, image threads and per-image delay are now read from each crawler's `CONFIG` (`chapter_concurrency` / `download_threads` / `download_concurrency` / `download_delay`) — no more 429/403 walls, and 403/429 now switch to another exit instead of aborting the image
+- **漫画客 (yumanhua) chapter list fixed**: the detail-page filter regex only matched titles starting with a digit, so chapters named `第95话 …` were dropped — the list stopped at 74 chapters. Now title patterns `第N话/章` and `总N` both match, the latest 20 DOM chapters are merged with the 75 from `/morechapter`, and notice rows (`预告`) are filtered only when the title carries no chapter number → **94 chapters** for the same comic
+- **Human-like pacing on every site** (always on, `config.py → HUMAN_MODE`): per-image random delay, chapter-to-chapter random pause, concurrency capped at 3 / threads at 2, rotating browser User-Agent, and the browser pauses 0.6–1.6 s after every page navigation — downloads look like a person clicking through chapters instead of a script hammering the site, which is what triggers bans in the first place. Turn `HUMAN_MODE = False` if you want the old full-speed behaviour
+
 ---
 
 ## 1. UI Guide

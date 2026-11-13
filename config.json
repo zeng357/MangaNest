@@ -1,6 +1,6 @@
 {
   "cookies_dir": "cookies",
-  "download_path": "C:/Users/zeng/Desktop",
+  "download_path": "E:/狐妖小红娘",
   "max_tabs": "5",
   "download_threads": "4",
   "download_mode": "coroutine",
@@ -12,5 +12,11 @@
   "create_zip": false,
   "image_name_padding": "0",
   "chapter_folder_naming": "title",
-  "window_size": "medium"
+  "window_size": "medium",
+  "proxy_enabled": false,
+  "proxy_source": "file",
+  "proxy_file": "proxies.txt",
+  "proxy_url": "",
+  "proxy_browser": "",
+  "proxy_allow_direct": true
 }

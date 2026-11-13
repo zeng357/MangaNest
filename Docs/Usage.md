@@ -103,6 +103,39 @@ Turn downloaded manga images (JPG/PNG/WebP/GIF/BMP) into e-books: **PDF · CBZ �
 - **Chapter folder naming**: display style of chapter folders.
 - **Window / download / browser options**: fonts, timeouts, headless mode, etc.
 
+### 4.1 Proxy settings (hide your real IP)
+
+Open **⚙ Settings → 代理设置**:
+
+| Field | Meaning |
+|---|---|
+| **启用代理** | Master switch. Applies to image downloads **and** the browser |
+| **来源 → 代理列表文件 / 订阅链接** | `proxies.txt` (one proxy per line) or a subscription URL (plain text or base64) |
+| **列表文件** | Path to the proxy list; **生成模板** writes a commented `proxies.txt` for you |
+| **订阅链接** | Only used when source = subscription |
+| **浏览器出口** | Fixed exit for the browser, e.g. `http://127.0.0.1:7890`. Empty → first proxy in the list. For a rotating (dynamic IP) service, put its local gateway here |
+| **代理全部不可用时回退直连** | On: downloads still finish (one request on your real IP). Off: fail loudly instead — use this if the IP must never be exposed |
+
+Accepted formats: `http://127.0.0.1:7890`, `http://user:pass@1.2.3.4:8080`, `1.2.3.4:8080`, `1.2.3.4:8080:user:pass`, `socks5://1.2.3.4:1080` (SOCKS5 browser-only).
+
+How rotation works: each image request takes the next exit (up to `proxy_max_tries`, default 3). An exit that fails 3 times in a row is cooled down for 90 s. Settings are saved to `config.json` immediately and apply from the next download.
+
+### 4.2 Human-like pacing (anti-ban, always on)
+
+`config.py`:
+
+| Constant | Default | Effect |
+|---|---|---|
+| `HUMAN_MODE` | `True` | Master switch |
+| `HUMAN_DELAY_MIN/MAX` | 0.3 / 0.9 s | Random extra wait after every image |
+| `HUMAN_CHAPTER_PAUSE_MIN/MAX` | 1.5 / 4.0 s | Random pause between chapters |
+| `HUMAN_MAX_CONCURRENCY` | 3 | Images downloaded in parallel per chapter |
+| `HUMAN_MAX_THREADS` | 2 | Download threads |
+| `HUMAN_BROWSER_PAUSE_MIN/MAX` | 0.6 / 1.6 s | Pause after every browser page navigation |
+| `HUMAN_UA_POOL` | 4 Edge UAs | Rotating User-Agent for image requests |
+
+Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_concurrency`, `download_threads`, `download_concurrency`, `download_delay`) — the effective values are the **stricter** of the two, so a site can be slowed further but never sped past the human caps. Set `HUMAN_MODE = False` to restore the old full-speed behaviour.
+
 ---
 
 ## 5. Adding any new website (Auto Site Analyzer)

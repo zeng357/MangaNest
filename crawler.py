@@ -1,9 +1,59 @@
 import time
 import os
 import json
+import random
 
 from config import DEFAULT_COOKIES_DIR
 from site_discovery import get_site_crawler_class
+
+
+def human_mode_enabled():
+    try:
+        import config
+        return bool(getattr(config, 'HUMAN_MODE', True))
+    except Exception:
+        return True
+
+
+def human_nav_pause():
+    """页面跳转后的随机停顿：模拟正常人看页面、等加载的节奏。"""
+    if not human_mode_enabled():
+        return
+    try:
+        import config
+        lo = float(getattr(config, 'HUMAN_BROWSER_PAUSE_MIN', 0.6))
+        hi = float(getattr(config, 'HUMAN_BROWSER_PAUSE_MAX', 1.6))
+    except Exception:
+        lo, hi = 0.6, 1.6
+    if hi < lo:
+        lo, hi = hi, lo
+    time.sleep(random.uniform(lo, hi))
+
+
+class HumanTabProxy:
+    """浏览器标签代理：页面跳转(get/refresh/back)后自动随机停顿。
+
+    只包一层导航动作，其余属性/方法原样透传给 DrissionPage 的标签对象，
+    这样所有站点爬虫的翻页行为都会带上人工节奏，不需要逐站修改。
+    """
+
+    NAV_METHODS = ('get', 'refresh', 'back', 'forward')
+
+    def __init__(self, tab):
+        object.__setattr__(self, '_tab', tab)
+
+    def __getattr__(self, name):
+        attr = getattr(object.__getattribute__(self, '_tab'), name)
+        if name in HumanTabProxy.NAV_METHODS and callable(attr):
+            def wrapped(*args, **kwargs):
+                result = attr(*args, **kwargs)
+                human_nav_pause()
+                return result
+            return wrapped
+        return attr
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, '_tab'), name, value)
 
 
 class ComicCrawler:
@@ -98,6 +148,16 @@ class ComicCrawler:
         if self.site_config.get('direct_connect'):
             co.set_argument('--no-proxy-server')
             print("该站点启用直连模式（禁用系统代理，浏览器直连访问）")
+        else:
+            # 代理池：config.json 开启后浏览器也走代理，搜索/详情页/章节页不暴露本机IP
+            try:
+                import proxy_pool
+                endpoint = proxy_pool.browser_proxy()
+                if endpoint:
+                    co.set_proxy(endpoint)
+                    print(f"浏览器已启用代理出口: {proxy_pool.mask_proxy(endpoint)}")
+            except Exception as e:
+                print(f"浏览器代理设置失败（本次直连）: {e}")
         
         try:
             self.page = ChromiumPage(co)
@@ -109,6 +169,11 @@ class ComicCrawler:
             time.sleep(2)
             self.page = ChromiumPage(co)
             self.tab = self.page
+
+        # 模拟人工：翻页/刷新后自动随机停顿（所有站点统一生效，无需逐站改代码）
+        if human_mode_enabled():
+            self.tab = HumanTabProxy(self.tab)
+            print("已启用模拟人工节奏（页面跳转后随机停顿，读取章节/详情页时不再机械连发）")
         
         # 初始化网站爬虫实例
         self.site_crawler = self.site_crawler_class(self)

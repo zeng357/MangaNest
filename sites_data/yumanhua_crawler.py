@@ -8,6 +8,13 @@ from utils import is_normal_url
 # 通知类章节标题特征（休刊/公告/延期等，非真实漫画章节）
 _NOTICE_TITLE_RE = re.compile(r'休刊|公告|通知|请假|延迟|延期|抱歉|停更|休更|双更|更新|预告')
 
+# 真章节标题样式：「第76话 标题」/「第12章 标题」/「总697·标题」/「697·标题」
+# 注意：旧版只认「数字/总N」开头，会把漫画客的「第76话 …」整段最新章节当成非章节丢掉，
+# 导致只加载到 /morechapter 的旧章节（实测 74 章 vs 实际 94 章）。
+_CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
+# 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
+_CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
+
 
 class YumanhuaCrawler:
     """漫画客(yumanhua.com)爬虫 —— 已按源码项目规范重写（2026-09 重新解析核验）
@@ -47,6 +54,13 @@ class YumanhuaCrawler:
         'chapter_group_size': None,
         # 图片在 ecombdimg.com / shimolife.com 等 CDN，与站点不同域，带 Referer 防防盗链
         'image_referer': 'http://yumanhua.com/',
+        # 站点限速（2026-11-13）：站点/CDN 对高频请求有限流，下载不再追求满并发。
+        # chapter_concurrency: 同时处理的章节数；download_threads: 单章下载线程数上限；
+        # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数
+        'chapter_concurrency': 2,
+        'download_threads': 1,
+        'download_concurrency': 2,
+        'download_delay': 0.5,
     }
 
     def __init__(self, crawler):
@@ -144,6 +158,11 @@ class YumanhuaCrawler:
           - 详情页「章节列表」区域只渲染最新一截（如 总697→总680，共 ~18 条），底部有"更多话"按钮；
           - POST /morechapter 返回的是更早的旧章节（如 总679→001）。
         若只用接口会漏掉最新章节；若只用 DOM 会漏掉旧章节。因此两者合并。
+
+        实测（2026-11-13，戏精妈咪在线Battle/TRETTcf）：本站标题格式是「第95话 标题」，
+        旧版 DOM 过滤正则只认「数字/总N」开头，把最新一截（第76~95话）全丢掉，只剩接口 75 条
+        （含 1 条“预告”被过滤）= 74 章，用户报“章节数量少了”。现改用 _CHAPTER_TEXT_RE 兼容「第N话」，
+        实得 94 章（第1~95话，站点自身缺第56话）。
         """
         comic_id = self._extract_comic_id(target_comic_tab)
         if not comic_id:
@@ -161,9 +180,12 @@ class YumanhuaCrawler:
                 name = (c or {}).get('chaptername') or (c or {}).get('title') or ''
                 if not cid:
                     continue
-                if _NOTICE_TITLE_RE.search(name):
+                name = name.strip()
+                # 通知类过滤只针对「无章节号」的条目（如“预告/休刊公告”），
+                # 标题里恰好含“更新/预告”但带「第N话」的真章节要保留
+                if _NOTICE_TITLE_RE.search(name) and not _CHAPTER_NO_RE.match(name):
                     continue
-                out.append({'chapterid': cid, 'chaptername': name.strip()})
+                out.append({'chapterid': cid, 'chaptername': name})
             return out
 
         # 1) 详情页 DOM：最新章节（新->旧）
@@ -182,8 +204,8 @@ class YumanhuaCrawler:
                 href = (item or {}).get('href') or ''
                 text = (item or {}).get('text') or ''
                 chid = href.rstrip('/').split('/')[-1].replace('.html', '')
-                # 只收“总N·标题 / N·标题”形式的真章节，排除“开始阅读”等按钮链接
-                if chid and re.match(r'^(总\s*)?\d', text.strip()):
+                # 只收“第N话 … / 总N·标题 / N·标题”形式的真章节，排除“开始阅读”等按钮链接
+                if chid and _CHAPTER_TEXT_RE.match(text.strip()):
                     dom_chapters.append({'chapterid': chid, 'chaptername': text})
         except Exception as e:
             print(f"解析详情页章节列表失败: {e}")
@@ -206,13 +228,16 @@ class YumanhuaCrawler:
                 seen.add(cid)
                 merged.append(ch)
 
-        # 4) 反转成 旧->新，num=1 对应最早一话
+        # 4) 反转成 旧->新，num 必须连续 1..N（collect_chapters_images 用 num-1 取列表下标，
+        #    站内编号会跳号如缺第56话，不能直接用站点编号当 num）；
+        #    标题保留站内「第N话 …」原文，站点真实编号仍在标题里可见
         chapters = []
         for i, ch in enumerate(reversed(merged), 1):
+            title = (ch.get('chaptername') or '').strip() or f"第{i}话"
             chapters.append({
                 'num': i,
                 'url': f"{self.SITE_URL}{comic_id}/{ch['chapterid']}.html",
-                'title': ch.get('chaptername') or f"第{i}话",
+                'title': title,
             })
         self._chapters_cache[comic_id] = chapters
         print(f"共获取 {len(chapters)} 个章节URL（详情页最新+接口旧章合并，通知已过滤）")
@@ -325,6 +350,11 @@ class YumanhuaCrawler:
 
     def collect_chapters_images(self, target_comic_tab, chapter_start=1, chapter_end=0,
                                 max_threads=3, progress_callback=None):
+        # 站点限速：同时处理的章节数不超过 CONFIG.chapter_concurrency（默认 2）
+        cap = int((self.CONFIG or {}).get('chapter_concurrency') or 0)
+        if cap and max_threads > cap:
+            print(f"章节并发按站点限速下调: {max_threads} -> {cap}")
+            max_threads = cap
         print(f"设置最大同时收集线程数: {max_threads}")
 
         chapter_urls = self._fetch_all_chapters(target_comic_tab)

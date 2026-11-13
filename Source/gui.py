@@ -339,6 +339,13 @@ class GenericComicDownloaderGUI:
         self.image_name_padding_var = tk.StringVar(value=str(DEFAULT_IMAGE_NAME_PADDING))
         self.chapter_folder_naming_var = tk.StringVar(value=DEFAULT_CHAPTER_FOLDER_NAMING)
         self.window_size_var = tk.StringVar(value="medium")
+        # 代理设置（下载/浏览器全部走代理出口，避免暴露本机 IP）
+        self.proxy_enabled_var = tk.BooleanVar(value=False)
+        self.proxy_file_var = tk.StringVar(value="proxies.txt")
+        self.proxy_url_var = tk.StringVar(value="")
+        self.proxy_source_var = tk.StringVar(value="file")
+        self.proxy_browser_var = tk.StringVar(value="")
+        self.proxy_allow_direct_var = tk.BooleanVar(value=True)
         # 初始化完成前禁止自动保存（避免构建期间 on_site_change 等以默认值覆盖 config.json）
         self._config_loaded = False
 
@@ -347,7 +354,10 @@ class GenericComicDownloaderGUI:
                      self.first_timeout_var, self.retry_timeout_var,
                      self.browser_type_var, self.browser_mode_var, self.browser_path_var,
                      self.create_zip_var, self.image_name_padding_var,
-                     self.chapter_folder_naming_var):
+                     self.chapter_folder_naming_var,
+                     self.proxy_enabled_var, self.proxy_file_var, self.proxy_url_var,
+                     self.proxy_source_var, self.proxy_browser_var,
+                     self.proxy_allow_direct_var):
             _var.trace_add('write', self._on_settings_changed)
 
         # ========== 站点切换逻辑 ==========
@@ -627,6 +637,47 @@ class GenericComicDownloaderGUI:
         ttk.Entry(path_row, textvariable=self.browser_path_var, font=("微软雅黑", 9)).grid(row=0, column=0, sticky='ew', padx=(0, 6))
         ttk.Button(path_row, text="浏览", command=self.browse_browser, width=6).grid(row=0, column=1)
 
+        # ---- 代理设置 ----
+        proxy_frame = ttk.LabelFrame(self.page_settings, text="代理设置（下载与浏览器全部走代理出口）", style="Card.TLabelframe")
+        proxy_frame.grid(row=4, column=0, sticky='ew', padx=12, pady=(6, 12))
+        proxy_frame.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            proxy_frame, text="启用代理（图片下载按请求轮换出口，搜索/章节页也走代理）",
+            variable=self.proxy_enabled_var
+        ).grid(row=0, column=0, columnspan=3, sticky='w', padx=6, pady=(6, 2))
+
+        ttk.Label(proxy_frame, text="来源:").grid(row=1, column=0, sticky='e', padx=(0, 10), pady=4)
+        src_row = ttk.Frame(proxy_frame)
+        src_row.grid(row=1, column=1, sticky='w', pady=4)
+        ttk.Radiobutton(src_row, text="代理列表文件", variable=self.proxy_source_var, value="file").pack(side=tk.LEFT)
+        ttk.Radiobutton(src_row, text="订阅链接", variable=self.proxy_source_var, value="url").pack(side=tk.LEFT, padx=(16, 0))
+
+        ttk.Label(proxy_frame, text="列表文件:").grid(row=2, column=0, sticky='e', padx=(0, 10), pady=4)
+        pf_row = ttk.Frame(proxy_frame)
+        pf_row.grid(row=2, column=1, sticky='ew', pady=4)
+        pf_row.columnconfigure(0, weight=1)
+        ttk.Entry(pf_row, textvariable=self.proxy_file_var, font=("微软雅黑", 9)).grid(row=0, column=0, sticky='ew', padx=(0, 6))
+        ttk.Button(pf_row, text="浏览", command=self.browse_proxy_file, width=6).grid(row=0, column=1)
+        ttk.Button(pf_row, text="生成模板", command=self.create_proxy_template, width=8).grid(row=0, column=2, padx=(6, 0))
+
+        ttk.Label(proxy_frame, text="订阅链接:").grid(row=3, column=0, sticky='e', padx=(0, 10), pady=4)
+        ttk.Entry(proxy_frame, textvariable=self.proxy_url_var, font=("微软雅黑", 9)).grid(row=3, column=1, sticky='ew', pady=4)
+
+        ttk.Label(proxy_frame, text="浏览器出口:").grid(row=4, column=0, sticky='e', padx=(0, 10), pady=4)
+        ttk.Entry(proxy_frame, textvariable=self.proxy_browser_var, font=("微软雅黑", 9)).grid(row=4, column=1, sticky='ew', pady=4)
+
+        ttk.Label(
+            proxy_frame,
+            text="浏览器出口示例 http://127.0.0.1:7890；留空则用列表第一个。动态IP建议填“自动换IP”网关地址。",
+            foreground="gray", font=("微软雅黑", 8)
+        ).grid(row=5, column=0, columnspan=3, sticky='w', padx=6)
+
+        ttk.Checkbutton(
+            proxy_frame, text="代理全部不可用时回退本机直连（关闭则直接报错停止）",
+            variable=self.proxy_allow_direct_var
+        ).grid(row=6, column=0, columnspan=3, sticky='w', padx=6, pady=(2, 8))
+
         # 恢复上次保存的下载设置
         self.apply_saved_config()
         # 构建『格式转换』页（侧边栏第三页）
@@ -664,10 +715,22 @@ class GenericComicDownloaderGUI:
                 'image_name_padding': self.image_name_padding_var.get(),
                 'chapter_folder_naming': self.chapter_folder_naming_var.get(),
                 'window_size': self.window_size_var.get(),
+                'proxy_enabled': bool(self.proxy_enabled_var.get()),
+                'proxy_source': self.proxy_source_var.get(),
+                'proxy_file': self.proxy_file_var.get().strip(),
+                'proxy_url': self.proxy_url_var.get().strip(),
+                'proxy_browser': self.proxy_browser_var.get().strip(),
+                'proxy_allow_direct': bool(self.proxy_allow_direct_var.get()),
             }
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
             self.cookies_dir = config['cookies_dir']
+            # 代理配置变更后重建代理池，下一次下载/搜索即按新配置生效
+            try:
+                import proxy_pool
+                proxy_pool.reset_pool()
+            except Exception:
+                pass
         except Exception as e:
             print(f"保存配置文件失败: {e}")
     
@@ -709,6 +772,19 @@ class GenericComicDownloaderGUI:
             self.window_size_var.set(config['window_size'])
             w, h = WINDOW_SIZES[config['window_size']]
             self.root.geometry(f"{w}x{h}")
+        # 代理设置
+        if 'proxy_enabled' in config:
+            self.proxy_enabled_var.set(bool(config.get('proxy_enabled')))
+        if config.get('proxy_source') in ('file', 'url'):
+            self.proxy_source_var.set(config['proxy_source'])
+        if 'proxy_file' in config:
+            self.proxy_file_var.set(str(config.get('proxy_file') or 'proxies.txt'))
+        if 'proxy_url' in config:
+            self.proxy_url_var.set(str(config.get('proxy_url') or ''))
+        if 'proxy_browser' in config:
+            self.proxy_browser_var.set(str(config.get('proxy_browser') or ''))
+        if 'proxy_allow_direct' in config:
+            self.proxy_allow_direct_var.set(bool(config.get('proxy_allow_direct')))
         # 配置恢复完成，此后设置变更才自动保存
         self._config_loaded = True
     
@@ -941,6 +1017,28 @@ class GenericComicDownloaderGUI:
         )
         if path:
             self.browser_path_var.set(path)
+
+    def browse_proxy_file(self):
+        """选择代理列表文件"""
+        path = filedialog.askopenfilename(
+            title="选择代理列表文件",
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")]
+        )
+        if path:
+            self.proxy_file_var.set(path)
+
+    def create_proxy_template(self):
+        """在列表文件路径生成带注释的代理模板（已存在不覆盖）"""
+        try:
+            import proxy_pool
+            path = (self.proxy_file_var.get() or 'proxies.txt').strip()
+            if proxy_pool.write_template(path):
+                self.append_status(f"已生成代理模板: {path}（按文件内说明填入代理后勾选启用）")
+                messagebox.showinfo("代理模板", f"已生成：{path}\n\n一行一个代理，例如 http://127.0.0.1:7890")
+            else:
+                self.append_status(f"代理模板已存在，未覆盖: {path}")
+        except Exception as e:
+            messagebox.showerror("错误", f"生成代理模板失败: {e}")
     
     def update_browser_path(self):
         browser_type = self.browser_type_var.get()
