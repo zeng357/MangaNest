@@ -51,6 +51,9 @@ class MgreadCrawler:
         # 固定浏览器配置目录，手动验证一次后 cf_clearance 长期复用，不用每次重验。
         'persistent_profile': True,
         'challenge_wait': 240,
+        # 海外服务器瞬时不通很常见：同一页多刷新几次通常就能进
+        'page_attempts': 8,
+        'plain_timeout': 8,
     }
 
     # 页面状态探测：内容是否就绪 / 是否 Cloudflare 人机验证 / 是否连接被重置
@@ -115,6 +118,7 @@ class MgreadCrawler:
             # 由 crawler.search_comic 的中文->英文翻译流程兜底
             return []
         min_hits = 2 if len(q_tokens) >= 2 else 1
+        exact_slug = re.sub(r'[^a-z0-9]+', '-', query.lower()).strip('-')
         scored = []
         for cand in candidates:
             haystack = self._query_tokens(
@@ -127,10 +131,16 @@ class MgreadCrawler:
             if hits < min_hits:
                 continue
             score = hits / len(q_tokens)
+            slug = cand['url'].rstrip('/').split('/')[-1].lower()
+            if exact_slug and slug == exact_slug:
+                # 查询词与 slug 完全一致（如 solo leveling -> solo-leveling）时优先精确命中，
+                # 避免被同名衍生作（solo-leveling-arise / -ragnarok）排到前面。
+                score = 1.0
+                cand['exact'] = True
             if score >= threshold:
                 cand['score'] = round(score, 2)
                 scored.append(cand)
-        scored.sort(key=lambda c: -c['score'])
+        scored.sort(key=lambda c: (not c.get('exact'), -c['score'], -len(c['url'])))
         if scored:
             print('候选相关性: ' + ' | '.join(
                 f"{c['url'].rstrip('/').split('/')[-1]}({c['score']})" for c in scored[:5]
@@ -161,16 +171,18 @@ class MgreadCrawler:
         except Exception:
             return {}
 
-    def _goto_ready(self, tab, url, selector, label='页面', attempts=4, timeout=None):
+    def _goto_ready(self, tab, url, selector, label='页面', attempts=None, timeout=None):
         """打开 url 并等待内容就绪，自动处理站点侧两类拦截：
 
           1. Cloudflare 人机验证（`Just a moment` / Turnstile 复选框）：
              有头模式下提示用户手动点一次，程序轮询等待；无头模式直接报错并指引切有头
              （不实现任何自动破解验证码的逻辑）；
-          2. 连接被重置（ERR_CONNECTION_RESET，该站常见）：
-             自动刷新重试，最多 attempts 次，间隔逐次加长（含随机抖动）。
+          2. 连接被重置 / 页面长时间空白（该站为海外服务器，常见瞬时不通）：
+             自动刷新重试，间隔逐次加长（含随机抖动），多次刷新通常就能进。
         """
         timeout = timeout or int(self.CONFIG.get('challenge_wait', 240))
+        plain_timeout = int(self.CONFIG.get('plain_timeout', 8))
+        attempts = attempts or int(self.CONFIG.get('page_attempts', 8))
         last_err = ''
         for attempt in range(1, attempts + 1):
             try:
@@ -193,19 +205,25 @@ class MgreadCrawler:
                         last_err = '连接被重置(ERR_CONNECTION_RESET)'
                         print(f"{label} 连接被重置，准备重试（第{attempt}/{attempts}次）")
                         break
-                    if st.get('challenge') and not warned:
-                        warned = True
-                        if getattr(self.crawler, 'headless', False):
-                            raise Exception(
-                                f"{label} 命中 Cloudflare 人机验证，无头模式无法完成验证。"
-                                "请在 设置 → 浏览器设置 切换为「有头（显示窗口）」，"
-                                "重新运行并在弹出的窗口里完成一次『Verify you are human』；"
-                                "验证结果会保存到持久化配置目录，之后可直接用无头模式。"
-                            )
-                        print(f"{label} 遇到 Cloudflare 人机验证：请在弹出的浏览器窗口中"
-                              "完成『Verify you are human』验证，程序会自动等待并通过。")
+                    if st.get('challenge'):
+                        if not warned:
+                            warned = True
+                            if getattr(self.crawler, 'headless', False):
+                                raise Exception(
+                                    f"{label} 命中 Cloudflare 人机验证，无头模式无法完成验证。"
+                                    "请在 设置 → 浏览器设置 切换为「有头（显示窗口）」，"
+                                    "重新运行并在弹出的窗口里完成一次『Verify you are human』；"
+                                    "验证结果会保存到持久化配置目录，之后可直接用无头模式。"
+                                )
+                            print(f"{label} 遇到 Cloudflare 人机验证：请在弹出的浏览器窗口中"
+                                  "完成『Verify you are human』验证，程序会自动等待并通过。")
                     else:
                         last_err = '页面内容超时未出现'
+                        if time.time() - start > plain_timeout:
+                            # 既没验证页也没内容：多半是连接被瞬时掐断，刷新比干等有效
+                            print(f"{label} 页面空白 {plain_timeout}s，刷新重试"
+                                  f"（第{attempt}/{attempts}次）")
+                            break
                     time.sleep(1.2)
                 else:
                     # 等待超时（既没就绪也没报错）
@@ -213,7 +231,8 @@ class MgreadCrawler:
                         last_err = '人机验证未在时限内完成'
                     print(f"{label} 等待超时（{timeout}s，第{attempt}/{attempts}次）")
             if attempt < attempts:
-                wait = 2.0 + attempt * 1.5 + random.uniform(0, 1.5)
+                wait = min(3.0 + attempt * 1.5, 15.0) + random.uniform(0, 2.0)
+                print(f"{label} {wait:.1f}s 后重新加载")
                 time.sleep(wait)
         raise Exception(
             f"{label} 连续 {attempts} 次尝试仍未就绪（{last_err or '原因未知'}）。"
@@ -304,12 +323,12 @@ class MgreadCrawler:
             print(f"REST(浏览器 fetch) 失败: {e}")
             return ''
 
-    def _fetch_detail_has_chapters(self, url):
-        """在当前标签内 fetch 候选详情页 HTML，统计章节链接数，预筛空壳。
+    def _fetch_page_stats(self, url):
+        """在当前标签内 fetch 页面 HTML，返回 {status, n(章节链接数), chl(是否挑战页)}。
 
-        返回 True=含章节；False=明确判定为空壳（HTTP 200 且确无章节链接）。
-        fetch 失败、非 200、或返回 Cloudflare 挑战页时无法判断，保守放行（True），
-        避免把正常作品误杀成空壳。
+        用于「先判断再开页面」：章节第 N 页超出范围时站点返回 200 但无章节链接
+        （或 404），可直接结束翻页，不用反复刷新干等；被挑战页/网络错误拦住时返回空，
+        调用方按未知处理。
         """
         try:
             js = (
@@ -320,14 +339,46 @@ class MgreadCrawler:
                 "return {status:r.status, chl:chl, n:(t.match(/\\/chapter-\\d+\\//g)||[]).length};"
                 "})();"
             )
-            st = self.crawler.tab.run_js(js, url) or {}
-            if st.get('n'):
-                return True
-            if st.get('status') != 200 or st.get('chl'):
-                return True   # 无法判断（被验证页/错误页拦截），保守放行
-            return bool(st.get('n'))
+            return self.crawler.tab.run_js(js, url) or {}
         except Exception:
+            return {}
+
+    def _fetch_chapter_links(self, url):
+        """在当前标签内 fetch 章节分页 HTML，直接解析出章节链接列表。
+
+        返回 {status, chl, links:[{href,text}]}；被挑战页/网络错误拦住返回 {}，
+        由调用方回退到浏览器渲染。
+        """
+        try:
+            js = (
+                "return (async () => {"
+                "const r = await fetch(arguments[0], {credentials:'include'});"
+                "const t = await r.text();"
+                "const chl=/Just a moment|challenge-platform|verify you are human/i.test(t);"
+                "if (chl) return {status:r.status, chl:true, links:[]};"
+                "const doc = new DOMParser().parseFromString(t,'text/html');"
+                "const links = Array.from(doc.querySelectorAll('.chapter-list a[href*=\"/chapter-\"]'))"
+                ".map(a=>({href:a.getAttribute('href'), text:(a.innerText||'').trim()}));"
+                "return {status:r.status, chl:false, links:links};"
+                "})();"
+            )
+            return self.crawler.tab.run_js(js, url) or {}
+        except Exception:
+            return {}
+
+    def _fetch_detail_has_chapters(self, url):
+        """在当前标签内 fetch 候选详情页 HTML，统计章节链接数，预筛空壳。
+
+        返回 True=含章节；False=明确判定为空壳（HTTP 200 且确无章节链接）。
+        fetch 失败、非 200、或返回 Cloudflare 挑战页时无法判断，保守放行（True），
+        避免把正常作品误杀成空壳。
+        """
+        st = self._fetch_page_stats(url)
+        if st.get('n'):
             return True
+        if st.get('status') != 200 or st.get('chl'):
+            return True   # 无法判断（被验证页/错误页拦截），保守放行
+        return False
 
     def search_comic(self, comic_name, comic_id=None):
         """支持三种入口：
@@ -374,7 +425,7 @@ class MgreadCrawler:
             # 搜索页可能先落到人机验证或被重置；最多等 60s，失败交给下面的重试循环
             try:
                 self._goto_ready(self.crawler.tab, search_url, 'a[href*="/manga/"]',
-                                 timeout=60, label='搜索结果页', attempts=3)
+                                 timeout=90, label='搜索结果页')
             except Exception as e:
                 print(f"搜索结果页等待未就绪: {e}")
 
@@ -507,21 +558,46 @@ class MgreadCrawler:
         for page_no in range(1, self._MAX_CHAPTER_PAGES + 1):
             if page_no == 1:
                 page_url = f"{base}/"
+                try:
+                    self._goto_ready(target_comic_tab, page_url,
+                                     '.chapter-list a[href*="/chapter-"]',
+                                     label='章节第1页')
+                    raw = target_comic_tab.run_js(
+                        "return Array.from(document.querySelectorAll"
+                        "('.chapter-list a[href*=\"/chapter-\"]'))"
+                        ".map(a=>({href:a.getAttribute('href'), text:(a.innerText||'').trim()}));"
+                    ) or []
+                except Exception as e:
+                    print(f"章节第1页加载失败: {e}")
+                    break
             else:
-                page_url = f"{base}/chapter/page/{page_no}/#chapter-list"
-
-            try:
-                self._goto_ready(target_comic_tab, page_url,
-                                 '.chapter-list a[href*="/chapter-"]',
-                                 label=f'章节第{page_no}页', attempts=3)
-                raw = target_comic_tab.run_js(
-                    "return Array.from(document.querySelectorAll"
-                    "('.chapter-list a[href*=\"/chapter-\"]'))"
-                    ".map(a=>({href:a.getAttribute('href'), text:(a.innerText||'').trim()}));"
-                ) or []
-            except Exception as e:
-                print(f"章节第{page_no}页加载失败: {e}")
-                break
+                # 第 2 页起优先用 HTTP fetch 取静态章节列表（不渲染页面，几秒即可），
+                # 顺带判断「分页已到尽头」；fetch 被拦截时才回退浏览器加载。
+                raw = []
+                st = self._fetch_chapter_links(f"{base}/chapter/page/{page_no}/")
+                if st and st.get('links'):
+                    raw = st['links']
+                    print(f"章节第{page_no}页（HTTP）取到 {len(raw)} 条链接")
+                elif st and st.get('status') in (404, 410):
+                    print(f"章节第{page_no}页不存在（HTTP {st.get('status')}），结束翻页")
+                    break
+                elif st and st.get('status') == 200 and not st.get('chl'):
+                    print(f"章节第{page_no}页无章节链接，结束翻页")
+                    break
+                else:
+                    page_url = f"{base}/chapter/page/{page_no}/#chapter-list"
+                    try:
+                        self._goto_ready(target_comic_tab, page_url,
+                                         '.chapter-list a[href*="/chapter-"]',
+                                         label=f'章节第{page_no}页')
+                        raw = target_comic_tab.run_js(
+                            "return Array.from(document.querySelectorAll"
+                            "('.chapter-list a[href*=\"/chapter-\"]'))"
+                            ".map(a=>({href:a.getAttribute('href'), text:(a.innerText||'').trim()}));"
+                        ) or []
+                    except Exception as e:
+                        print(f"章节第{page_no}页加载失败: {e}（后续章节可能不完整，建议重跑）")
+                        break
 
             new_count = 0
             for item in raw:
@@ -649,7 +725,7 @@ class MgreadCrawler:
             chapter_tab = main_tab.new_tab(chapter_url)
             # 阅读页同样可能被人机验证或连接重置拦住：等验证通过 + 图片容器就绪
             self._goto_ready(chapter_tab, chapter_url, '.chapter-body img',
-                             label=f'章节{chapter_num}阅读页', attempts=3)
+                             label=f'章节{chapter_num}阅读页')
 
             herf_list = self._collect_images_from_page(chapter_tab)
         except Exception as e:
@@ -679,7 +755,7 @@ class MgreadCrawler:
         except Exception as e:
             print(f"打开首页失败: {e}")
         self._goto_ready(self.crawler.tab, 'https://mgread.io/',
-                         'a[href*="/manga/"], .chapter-list', label='站点首页', attempts=3)
+                         'a[href*="/manga/"], .chapter-list', label='站点首页')
 
     def collect_chapters_images(self, target_comic_tab, chapter_start=1, chapter_end=0,
                                 max_threads=3, progress_callback=None):
