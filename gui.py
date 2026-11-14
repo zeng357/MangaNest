@@ -336,6 +336,8 @@ class GenericComicDownloaderGUI:
         self.browser_mode_var = tk.StringVar(value="headed")
         self.browser_path_var = tk.StringVar(value=BROWSER_PATHS['edge'])
         self.create_zip_var = tk.BooleanVar(value=False)
+        # 模拟人工下载：默认开启，对所有站点生效；可在设置里自行关闭
+        self.human_mode_var = tk.BooleanVar(value=True)
         self.image_name_padding_var = tk.StringVar(value=str(DEFAULT_IMAGE_NAME_PADDING))
         self.chapter_folder_naming_var = tk.StringVar(value=DEFAULT_CHAPTER_FOLDER_NAMING)
         self.window_size_var = tk.StringVar(value="medium")
@@ -354,7 +356,7 @@ class GenericComicDownloaderGUI:
                      self.first_timeout_var, self.retry_timeout_var,
                      self.browser_type_var, self.browser_mode_var, self.browser_path_var,
                      self.create_zip_var, self.image_name_padding_var,
-                     self.chapter_folder_naming_var,
+                     self.chapter_folder_naming_var, self.human_mode_var,
                      self.proxy_enabled_var, self.proxy_file_var, self.proxy_url_var,
                      self.proxy_source_var, self.proxy_browser_var,
                      self.proxy_allow_direct_var):
@@ -613,6 +615,16 @@ class GenericComicDownloaderGUI:
             variable=self.create_zip_var, command=self.on_create_zip_change
         ).grid(row=2, column=1, columnspan=2, sticky='w', pady=4)
 
+        # 模拟人工下载开关（全局，所有站点生效）
+        human_row = ttk.Frame(dl_frame)
+        human_row.grid(row=1, column=0, columnspan=2, sticky='w', padx=4, pady=(8, 2))
+        ttk.Checkbutton(
+            human_row, text="模拟人工下载（随机停顿 + 低并发，降低被封风险）",
+            variable=self.human_mode_var, command=self.on_human_mode_change
+        ).pack(side=tk.LEFT)
+        ttk.Label(human_row, text="默认开启；关闭后按设置里的固定参数下载",
+                  font=("微软雅黑", 9), foreground="gray").pack(side=tk.LEFT, padx=(8, 0))
+
         # ---- 浏览器设置 ----
         browser_frame = ttk.LabelFrame(self.page_settings, text="浏览器设置", style="Card.TLabelframe")
         browser_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(6, 12))
@@ -712,6 +724,7 @@ class GenericComicDownloaderGUI:
                 'browser_mode': self.browser_mode_var.get(),
                 'browser_path': self.browser_path_var.get().strip(),
                 'create_zip': self.create_zip_var.get(),
+                'human_mode': bool(self.human_mode_var.get()),
                 'image_name_padding': self.image_name_padding_var.get(),
                 'chapter_folder_naming': self.chapter_folder_naming_var.get(),
                 'window_size': self.window_size_var.get(),
@@ -738,6 +751,7 @@ class GenericComicDownloaderGUI:
         """启动时恢复上次保存的设置"""
         config = self.load_config()
         if not config:
+            self._apply_human_mode()
             self._config_loaded = True
             return
         mapping = {
@@ -759,6 +773,10 @@ class GenericComicDownloaderGUI:
             self.browser_mode_var.set(config['browser_mode'])
         if 'create_zip' in config:
             self.create_zip_var.set(bool(config['create_zip']))
+        if 'human_mode' in config:
+            self.human_mode_var.set(bool(config['human_mode']))
+        # 无论有没有存过，都把当前开关状态写进 config.HUMAN_MODE（缺省开启）
+        self._apply_human_mode()
         if 'image_name_padding' in config:
             padding = config['image_name_padding']
             if str(padding) in [str(v) for _, v in NAME_PADDING_OPTIONS]:
@@ -860,6 +878,26 @@ class GenericComicDownloaderGUI:
             self.append_status("已开启：下载完成后生成压缩包")
         else:
             self.append_status("已关闭：下载完成后不生成压缩包")
+
+    def _apply_human_mode(self):
+        """把界面上的『模拟人工下载』开关写进 config.HUMAN_MODE（对所有站点立即生效）"""
+        try:
+            import config as app_config
+            app_config.HUMAN_MODE = bool(self.human_mode_var.get())
+            return app_config.HUMAN_MODE
+        except Exception as e:
+            print(f"应用模拟人工开关失败: {e}")
+            return None
+
+    def on_human_mode_change(self):
+        """模拟人工下载开关切换：立即生效并提示"""
+        enabled = self._apply_human_mode()
+        if enabled is None:
+            return
+        if enabled:
+            self.append_status("已开启模拟人工下载：每张随机停顿、低并发、章节间随机停顿（默认）")
+        else:
+            self.append_status("已关闭模拟人工下载：按设置里的固定线程/并发/间隔下载（速度更快，被封风险更高）")
 
     def show_page(self, page_name):
         """左侧边栏页面切换：'main' 主页 / 'settings' 设置 / 'convert' 格式转换 / 'translate' 汉化"""
@@ -1261,6 +1299,7 @@ class GenericComicDownloaderGUI:
             cookies_dir = self.cookies_path_var.get().strip() or DEFAULT_COOKIES_DIR
             
             self.save_config()
+            self._apply_human_mode()
             self.confirm_button.config(state=tk.DISABLED)
             self.append_status(f"使用站点: {site_name}")
             if comic_id:
