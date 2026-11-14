@@ -84,7 +84,7 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 - **15–35 s between chapters** (`chapter_pause_min` / `chapter_pause_max`)
 - Expected cost for this site: **~6–7 min per 50-page chapter** (≈2.5 min page turning + ≈3.5–4 min downloads), so a 94-chapter comic takes several hours — intentional, and the only reliable way to stay under the site's radar
 - The reading-break mechanism is generic: any crawler can declare `download_pause_every` in its `CONFIG`; sites that don't declare it are unaffected
-- **v1.5.0 — parallel chapter pages + parallel downloads**: `SPEED_MODE` in `sites_data/yumanhua_crawler.py` now defaults to `'p3'` — 3 chapter pages collected in parallel (3 browser tabs), 8 threads downloading images, +0.1 s per image, a 2–4 s break every 30 images, 3–6 s between chapters. Measured: 3 chapters took 141 s to collect (vs 289 s sequentially); single-chapter downloads run at 2.6–2.8 images/s. `'std'`, `'slow'`, `'t3'`–`'t8'` remain available. Parallel tabs raise risk-control exposure — fall back to `'slow'` if 403/429 keep appearing. Only 漫画客 is affected; other sites keep their defaults
+- **v1.5.1 — fix for "collected but never downloads"**: the parallel chapter-page default (`p3`, 3 tabs at once) has been rolled back to `'t8'` — one chapter page at a time, 8 download threads, +0.2 s per image, a 3–6 s break every 20 images, 5–12 s between chapters. Chapter tabs are now always closed in a `finally` block so leftover tabs can't block the download stage. `'p3'` is still selectable for short ranges. Verified end to end: 1 chapter, 52/52 images, 10 transient 403s all recovered by the built-in retry
 
 ---
 

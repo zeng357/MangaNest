@@ -16,17 +16,16 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属速度档（v1.5.0） =====
-# 默认 'p3'：3 个章节页并行采集 + 8 线程并行下载（多开网页、并行下载）
-#   'p3'  ：默认。章节并发 3、下载 8 线程、每张 +0.1s、每 30 张歇 2~4s、章间 3~6s
-#   'std' ：2 线程、每张 +1.0s、每 10 张歇 2~5s、章间 5~10s（常规站节奏再放慢）
+# ===== 漫画客专属速度档（v1.5.1） =====
+# 默认 't8'：单章节页采集 + 8 线程并行下载（不会同时开多个章节页，避免卡住）
+#   't8'  ：默认。1 个章节页、8 线程、每张 +0.2s、每 20 张歇 3~6s、章间 5~12s
+#   'std' ：2 线程、每张 +1.0s、每 10 张歇 2~5s、章间 5~10s
 #   'slow'：1 线程、每张 +3.0s、每 8 张歇 6~14s、章间 15~35s（最保守）
-#   't3'  ：3 线程、每张 +1.2s；'t4'：4 线程、每张 +1.0s
-#   't6'  ：6 线程、每张 +0.3s；'t8'：8 线程、每张 +0.2s（仅单章并行）
-# 2026-11-14 实测：单章 8 线程无间隔 30/30、2.6~2.8 张/秒；
-# 3 章串行采集 289s，改 3 章并行后约 100s。
-# 并行会同时开多个章节页，风控压力更大；出现连续 403/429 或首页打不开，改回 'slow'。
-SPEED_MODE = 'p3'
+#   't3'/'t4'/'t6'：单章节页、3/4/6 线程
+#   'p3'  ：3 个章节页并行采集 + 8 线程下载（更快，但实测有概率卡住，仅短范围试用）
+# 2026-11-14 实测：单章 8 线程无间隔 30/30、2.6~2.8 张/秒。
+# 出现连续 403/429 或首页打不开，改回 'slow'。
+SPEED_MODE = 't8'
 
 _SPEED_PROFILES = {
     'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
@@ -37,7 +36,7 @@ _SPEED_PROFILES = {
     't6':   dict(cc=1, threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
     't8':   dict(cc=1, threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
 }
-_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['p3'])
+_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['t8'])
 
 
 class YumanhuaCrawler:
@@ -405,6 +404,7 @@ class YumanhuaCrawler:
         main_tab = chapter_info['main_tab']
         print(f"正在处理章节{chapter_num}: {chapter_url}")
 
+        chapter_tab = None
         try:
             chapter_tab = main_tab.new_tab(chapter_url)
             time.sleep(2)
@@ -425,7 +425,6 @@ class YumanhuaCrawler:
                     time.sleep(2)
                 else:
                     print(f"章节{chapter_num} 已达最大重试次数({max_retries})")
-                    chapter_tab.close()
                     return {
                         'chapter_num': chapter_num,
                         'title': chapter_info.get('title', ''),
@@ -433,11 +432,17 @@ class YumanhuaCrawler:
                     }
 
             herf_list = self.get_chapter_image_urls(chapter_tab)
-            chapter_tab.close()
 
         except Exception as e:
             print(f"处理章节{chapter_num}时出错: {e}")
             herf_list = []
+        finally:
+            # 无论成功/失败都关掉章节页，避免多标签残留把后续下载拖死
+            if chapter_tab is not None:
+                try:
+                    chapter_tab.close()
+                except Exception:
+                    pass
 
         return {
             'chapter_num': chapter_num,
