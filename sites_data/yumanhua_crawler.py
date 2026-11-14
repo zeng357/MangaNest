@@ -16,18 +16,18 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属速度档（v1.5.1） =====
-# 默认 't8'：单章节页采集 + 8 线程并行下载（不会同时开多个章节页，避免卡住）
-#   't8'  ：默认。1 个章节页、8 线程、每张 +0.2s、每 20 张歇 3~6s、章间 5~12s
-#   'std' ：2 线程、每张 +1.0s、每 10 张歇 2~5s、章间 5~10s
-#   'slow'：1 线程、每张 +3.0s、每 8 张歇 6~14s、章间 15~35s（最保守）
-#   't3'/'t4'/'t6'：单章节页、3/4/6 线程
-#   'p3'  ：3 个章节页并行采集 + 8 线程下载（更快，但实测有概率卡住，仅短范围试用）
-# 2026-11-14 实测：单章 8 线程无间隔 30/30、2.6~2.8 张/秒。
-# 出现连续 403/429 或首页打不开，改回 'slow'。
-SPEED_MODE = 'p3'
+# ===== 漫画客专属速度档（v1.5.3） =====
+# 默认 'default'：跟其他网站完全一样 —— 不额外限速、不加停顿，线程/并发沿用程序的全局设置
+#   'default'：同其他站点（本站只多一个“滚动到底触发懒加载”的翻页动作）
+#   't8'  ：单章节页 + 8 线程、每张 +0.2s、每 20 张歇 3~6s
+#   'std' ：2 线程、每张 +1.0s；'slow'：1 线程、每张 +3.0s（最保守）
+#   't3'/'t4'/'t6'：单章节页 3/4/6 线程
+#   'p3'  ：3 个章节页并行采集（实测在 GUI 有概率卡住，仅短范围试用）
+# 出现连续 403/429 或首页打不开，改 'slow'。
+SPEED_MODE = 'default'
 
 _SPEED_PROFILES = {
+    'default': dict(cc=1, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
     'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
     'std':  dict(cc=1, threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
     'slow': dict(cc=1, threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
@@ -36,7 +36,7 @@ _SPEED_PROFILES = {
     't6':   dict(cc=1, threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
     't8':   dict(cc=1, threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
 }
-_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['t8'])
+_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['default'])
 
 
 class YumanhuaCrawler:
@@ -82,17 +82,20 @@ class YumanhuaCrawler:
         # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
         # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）；
         # download_pause_every/extra_min/extra_max: 每下 N 张额外停一次（模拟看几页歇一会儿）
-        # 具体数值由顶部 SPEED_MODE 决定，改一行即可切换
+        # 具体数值由顶部 SPEED_MODE 决定；'default' 时下面的限速键一律不加，行为同其他站点
         'chapter_concurrency': _PROFILE['cc'],
-        'download_threads': _PROFILE['threads'],
-        'download_concurrency': _PROFILE['conc'],
-        'download_delay': _PROFILE['delay'],
-        'download_pause_every': _PROFILE['every'],
-        'download_pause_extra_min': _PROFILE['lo'],
-        'download_pause_extra_max': _PROFILE['hi'],
-        'chapter_pause_min': _PROFILE['chlo'],
-        'chapter_pause_max': _PROFILE['chhi'],
     }
+    if SPEED_MODE != 'default':
+        CONFIG.update({
+            'download_threads': _PROFILE['threads'],
+            'download_concurrency': _PROFILE['conc'],
+            'download_delay': _PROFILE['delay'],
+            'download_pause_every': _PROFILE['every'],
+            'download_pause_extra_min': _PROFILE['lo'],
+            'download_pause_extra_max': _PROFILE['hi'],
+            'chapter_pause_min': _PROFILE['chlo'],
+            'chapter_pause_max': _PROFILE['chhi'],
+        })
 
     def __init__(self, crawler):
         self.crawler = crawler
@@ -346,14 +349,12 @@ class YumanhuaCrawler:
             if no_grow >= 2 and pos >= total:
                 break
 
-        # 到底后停一下，再回落一点（真人看完会顺手往回划）
+        # 到底就立即结束：不再额外停等，采集完马上关标签
         try:
             chapter_tab.run_js('window.scrollTo(0, document.body.scrollHeight)')
-            time.sleep(random.uniform(1.2, 2.4))
-            chapter_tab.run_js('window.scrollBy(0, -%d)' % int(vh * random.uniform(0.15, 0.3)))
-            time.sleep(random.uniform(0.5, 1.0))
         except Exception:
             pass
+        time.sleep(0.2)
         print(f"模拟真人翻页完成：{screens} 屏")
 
     def get_chapter_image_urls(self, chapter_tab):
@@ -492,39 +493,67 @@ class YumanhuaCrawler:
                 })
                 print(f"准备处理第{num}章节: {chapter_urls[num - 1]['url']}")
 
-            # 并行：标签页在本线程（主线程）顺序创建，工作线程只操作自己的标签页。
+            # 并行：标签页在本线程（主线程）连续快速打开（不逐个等待），
+            # 工作线程用 Barrier 同步起跑、只操作自己的标签页，采完再一次性全部关闭。
             # DrissionPage 在同一线程里 new_tab/close 才稳，跨线程建页/关页是之前卡住的根因。
             open_tabs = []
             if len(batch) > 1:
                 for info in batch:
                     try:
                         t = self.crawler.page.new_tab(info['url'])
-                        time.sleep(1.2)
                         info['tab'] = t
                         open_tabs.append(t)
                     except Exception as e:
                         print(f"章节{info['chapter_num']} 预开标签失败，改为串行处理: {e}")
                         info['tab'] = None
+                if open_tabs:
+                    time.sleep(2.0)   # 等所有章节页一起加载
 
             threads, results = [], []
+            barrier = threading.Barrier(len(batch)) if open_tabs and len(batch) == len(open_tabs) else None
             def wrapper(info):
+                if barrier is not None:
+                    try:
+                        barrier.wait(timeout=60)   # 三页同时开翻
+                    except Exception:
+                        pass
                 results.append(self.collect_chapter_images(info))
 
             for info in batch:
                 t = threading.Thread(target=wrapper, args=(info,))
                 threads.append(t)
                 t.start()
-            for t in threads:
-                t.join()
 
-            # 采完统一在主线程关页
+            # 每个章节最多等 300 秒；超时强制关掉它的标签页，让卡住的 CDP 调用报错退出，
+            # 避免“一直不动、旧窗口也不关”的死等。
+            for t, info in zip(threads, batch):
+                t.join(timeout=300)
+                if t.is_alive():
+                    print(f"章节{info['chapter_num']} 超过300秒未完成，强制关闭标签页")
+                    tab = info.get('tab')
+                    if tab is not None:
+                        try:
+                            tab.close()
+                        except Exception:
+                            pass
+                    t.join(timeout=10)
+
+            # 采完统一在主线程一次性关闭全部章节页（按 id 批量关，避免有个别页关不掉）
+            ids = []
             for t in open_tabs:
+                try:
+                    ids.append(t.tab_id)
+                except Exception:
+                    pass
                 try:
                     t.close()
                 except Exception:
                     pass
-            if open_tabs:
-                time.sleep(0.5)
+            if ids:
+                try:
+                    self.crawler.page.close_tabs(ids)
+                except Exception:
+                    pass
 
             all_chapters_data.extend(results)
             for _ in results:

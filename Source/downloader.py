@@ -1703,8 +1703,8 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     site_threads = site_cfg.get('download_threads', 0)
     if human_mode_enabled():
         # 模拟人工：全站统一收紧并发/线程，并保证每张图至少有一点随机间隔
-        site_conc, site_threads = human_limits(site_conc or download_concurrency, site_threads or download_thread_count)
-        download_concurrency, download_thread_count = site_conc, site_threads
+        site_conc, site_threads = human_limits(site_conc or concurrent_limit, site_threads or download_thread_count)
+        concurrent_limit, download_thread_count = site_conc, site_threads
         if not site_delay:
             site_delay = 0.4
     set_active_download_delay(site_delay)
