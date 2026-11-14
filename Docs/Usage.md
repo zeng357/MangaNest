@@ -156,7 +156,7 @@ Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_c
 'chapter_pause_max': 35.0,
 ```
 
-**Speed profiles (v1.4.6)**: `SPEED_MODE` at the top of `sites_data/yumanhua_crawler.py` selects `'slow'` (default: 1 thread, +3.0 s/image), `'t3'` (3 threads, +1.2 s/image) or `'t4'` (4 threads, +1.0 s/image). The multi-thread profiles keep a deliberate per-image pause so the effective rate stays around 1.2–1.7 images/s; local test showed 27/30 first pass with 3 transient 403s, all fixed by the built-in retry. Only 漫画客 uses these profiles — other sites keep their own defaults.
+**Speed profiles (v1.4.7)**: `SPEED_MODE` at the top of `sites_data/yumanhua_crawler.py` currently defaults to `'t6'` — 6 threads with a +0.3 s per-image pause, a 3–6 s break every 20 images and 5–12 s between chapters (measured ~3.3 images/s locally). `'t8'` (8 threads, +0.2 s) reaches ~4.1 images/s; `'t4'`, `'t3'` and `'slow'` are the gentler fallbacks. Local test: 30/30 images, three transient 403s on the first pass, all restored by the built-in retry. Use `'slow'` if 403/429 start repeating on long runs. Only 漫画客 uses these profiles — other sites keep their own defaults.
 
 With these values a 50-page chapter takes roughly **6–7 minutes** (page turning + downloads), so a 94-chapter comic needs several hours. That is intentional: 漫画客 escalated from per-IP throttling to segment bans after high-speed batch runs. If you still hit 403/429/timeouts, stop the batch, enable a proxy exit in ⚙ Settings, and wait before retrying.
 
