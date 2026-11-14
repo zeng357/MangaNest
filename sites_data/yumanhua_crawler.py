@@ -16,12 +16,22 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属提速档开关（v1.4.5） =====
-# False：默认慢速档，最稳（每张 +3.0s，每 8 张歇 6~14s，章间 15~35s）
-# True ：提速档，约 1.9 倍速（每张 +1.5s，每 12 张歇 4~10s，章间 8~18s）
-# 实测：20 张样本 106.9s → 56.4s，单张 5.34s → 2.82s，未新增 403
-# 不建议再低于约 2.5s/张，连续数十章时更要用慢速档
-SPEED_UP = False
+# ===== 漫画客专属速度档（v1.4.6） =====
+# 三档可选，直接改下面这行：
+#   'slow'：默认最稳。单线程，每张 +3.0s，每 8 张歇 6~14s，章间 15~35s
+#   't3'  ：3 线程，每张 +1.2s（等效约 1.2 张/秒），每 10 张歇 4~8s，章间 10~25s
+#   't4'  ：4 线程，每张 +1.0s（等效约 1.7 张/秒），每 12 张歇 4~10s，章间 10~25s
+# 本地实测（2026-11-14，同一章 30 张）：4 线程无间隔 30/30、3.00 张/秒、0 个 403；
+# 但长跑未验证，所以 t3/t4 都额外加 1.0~1.2s 单张间隔，把请求速率压到约 1.2~1.7 张/秒。
+# 一旦出现连续 403/429 或首页打不开，改回 'slow' 并停手一段时间。
+SPEED_MODE = 'slow'
+
+_SPEED_PROFILES = {
+    'slow': dict(threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
+    't3':   dict(threads=3, conc=3, delay=1.2, every=10, lo=4.0, hi=8.0, chlo=10.0, chhi=25.0),
+    't4':   dict(threads=4, conc=4, delay=1.0, every=12, lo=4.0, hi=10.0, chlo=10.0, chhi=25.0),
+}
+_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['slow'])
 
 
 class YumanhuaCrawler:
@@ -67,17 +77,16 @@ class YumanhuaCrawler:
         # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
         # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）；
         # download_pause_every/extra_min/extra_max: 每下 N 张额外停一次（模拟看几页歇一会儿）
-        # 默认慢速：单章单线程、每张图 ≈3.3~3.9s、每 8 张多停 6~14s、章间 15~35s；
-        # SPEED_UP=True 时切成提速档：每张 ≈1.8~2.4s、每 12 张停 4~10s、章间 8~18s
+        # 具体数值由顶部 SPEED_MODE 决定（slow / t3 / t4），改一行即可切换
         'chapter_concurrency': 1,
-        'download_threads': 1,
-        'download_concurrency': 1,
-        'download_delay': 1.5 if SPEED_UP else 3.0,
-        'download_pause_every': 12 if SPEED_UP else 8,
-        'download_pause_extra_min': 4.0 if SPEED_UP else 6.0,
-        'download_pause_extra_max': 10.0 if SPEED_UP else 14.0,
-        'chapter_pause_min': 8.0 if SPEED_UP else 15.0,
-        'chapter_pause_max': 18.0 if SPEED_UP else 35.0,
+        'download_threads': _PROFILE['threads'],
+        'download_concurrency': _PROFILE['conc'],
+        'download_delay': _PROFILE['delay'],
+        'download_pause_every': _PROFILE['every'],
+        'download_pause_extra_min': _PROFILE['lo'],
+        'download_pause_extra_max': _PROFILE['hi'],
+        'chapter_pause_min': _PROFILE['chlo'],
+        'chapter_pause_max': _PROFILE['chhi'],
     }
 
     def __init__(self, crawler):
