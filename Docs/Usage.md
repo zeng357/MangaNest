@@ -156,6 +156,8 @@ Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_c
 'chapter_pause_max': 35.0,
 ```
 
+**Human mode scope (v1.6.4)**: the 模拟人工下载 checkbox has a **选择网站…** button beside it. Choose **全部网站** to apply the human-like pacing everywhere (previous behaviour), or **仅指定的网站** and tick one or more sites; only those sites get random pauses + low concurrency, every other site runs at the program's default speed. Saved as `human_scope` / `human_sites` in `config.json`; switching sites re-evaluates automatically and the label shows whether the current site is covered.
+
 **mgread.io retries (v1.6.3)**: the site sits on an overseas server and frequently drops connections; a page that resets or stays blank is reloaded automatically, up to 8 attempts (blank is detected after 8 s). Chapter pagination (page 2 and beyond) is fetched as static HTML over the browser session, so a 200-chapter list takes seconds instead of minutes, and a page past the end ends pagination instead of retrying. Search prefers an exact slug match: `solo leveling` → `/manga/solo-leveling/` rather than `solo-leveling-arise`.
 
 **mgread.io verification (v1.6.2)**: every page is behind a Cloudflare “Just a moment” check. Run once in **有头（显示窗口）** mode and complete the “Verify you are human” box; the browser profile for this site is persistent, so the clearance cookie is reused on later runs and headless works afterwards. No CAPTCHA is solved automatically — if you see the checkbox, click it.

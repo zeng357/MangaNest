@@ -336,6 +336,10 @@ class GenericComicDownloaderGUI:
         self.browser_mode_var = tk.StringVar(value="headed")
         self.browser_path_var = tk.StringVar(value=BROWSER_PATHS['edge'])
         self.create_zip_var = tk.BooleanVar(value=False)
+        # 模拟人工下载：默认开启；范围可设为「全部网站」或「仅指定网站（可多选）」
+        self.human_mode_var = tk.BooleanVar(value=True)
+        self.human_scope_var = tk.StringVar(value='all')   # all / selected
+        self.human_site_list = []                         # 仅 selected 时生效的站点名单
         self.image_name_padding_var = tk.StringVar(value=str(DEFAULT_IMAGE_NAME_PADDING))
         self.chapter_folder_naming_var = tk.StringVar(value=DEFAULT_CHAPTER_FOLDER_NAMING)
         self.window_size_var = tk.StringVar(value="medium")
@@ -354,7 +358,7 @@ class GenericComicDownloaderGUI:
                      self.first_timeout_var, self.retry_timeout_var,
                      self.browser_type_var, self.browser_mode_var, self.browser_path_var,
                      self.create_zip_var, self.image_name_padding_var,
-                     self.chapter_folder_naming_var,
+                     self.chapter_folder_naming_var, self.human_mode_var,
                      self.proxy_enabled_var, self.proxy_file_var, self.proxy_url_var,
                      self.proxy_source_var, self.proxy_browser_var,
                      self.proxy_allow_direct_var):
@@ -412,6 +416,10 @@ class GenericComicDownloaderGUI:
                 self._sync_cookie_str_display(site_name)
             else:
                 self.cookie_str_frame.pack_forget()
+
+            # 切换站点时按当前范围重新折算模拟人工开关（指定网站模式只对名单内站点生效）
+            if getattr(self, '_config_loaded', False):
+                self._apply_human_mode()
 
         self.site_var.trace("w", on_site_change)
         on_site_change()
@@ -613,6 +621,21 @@ class GenericComicDownloaderGUI:
             variable=self.create_zip_var, command=self.on_create_zip_change
         ).grid(row=2, column=1, columnspan=2, sticky='w', pady=4)
 
+        # 模拟人工下载开关（全局总开关）+ 范围选择（全部网站 / 仅指定网站，可多选）
+        human_row = ttk.Frame(dl_frame)
+        human_row.grid(row=1, column=0, columnspan=2, sticky='w', padx=4, pady=(8, 2))
+        ttk.Checkbutton(
+            human_row, text="模拟人工下载（随机停顿 + 低并发，降低被封风险）",
+            variable=self.human_mode_var, command=self.on_human_mode_change
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            human_row, text="选择网站…", width=10, command=self.on_choose_human_sites
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        self.human_scope_label = ttk.Label(
+            human_row, text="当前：全部网站开启", font=("微软雅黑", 9), foreground="gray"
+        )
+        self.human_scope_label.pack(side=tk.LEFT, padx=(8, 0))
+
         # ---- 浏览器设置 ----
         browser_frame = ttk.LabelFrame(self.page_settings, text="浏览器设置", style="Card.TLabelframe")
         browser_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(6, 12))
@@ -712,6 +735,9 @@ class GenericComicDownloaderGUI:
                 'browser_mode': self.browser_mode_var.get(),
                 'browser_path': self.browser_path_var.get().strip(),
                 'create_zip': self.create_zip_var.get(),
+                'human_mode': bool(self.human_mode_var.get()),
+                'human_scope': self.human_scope_var.get(),
+                'human_sites': list(self.human_site_list or []),
                 'image_name_padding': self.image_name_padding_var.get(),
                 'chapter_folder_naming': self.chapter_folder_naming_var.get(),
                 'window_size': self.window_size_var.get(),
@@ -738,6 +764,7 @@ class GenericComicDownloaderGUI:
         """启动时恢复上次保存的设置"""
         config = self.load_config()
         if not config:
+            self._apply_human_mode()
             self._config_loaded = True
             return
         mapping = {
@@ -759,6 +786,17 @@ class GenericComicDownloaderGUI:
             self.browser_mode_var.set(config['browser_mode'])
         if 'create_zip' in config:
             self.create_zip_var.set(bool(config['create_zip']))
+        if 'human_mode' in config:
+            self.human_mode_var.set(bool(config['human_mode']))
+        # 模拟人工范围：全部网站 / 仅指定网站（名单只保留当前仍存在的站点）
+        if config.get('human_scope') in ('all', 'selected'):
+            self.human_scope_var.set(config['human_scope'])
+        saved_sites = config.get('human_sites')
+        if isinstance(saved_sites, list):
+            valid = set(getattr(self, 'available_sites', []) or [])
+            self.human_site_list = [s for s in saved_sites if (not valid or s in valid)]
+        # 无论有没有存过，都把当前开关状态写进 config.HUMAN_MODE（缺省开启）
+        self._apply_human_mode()
         if 'image_name_padding' in config:
             padding = config['image_name_padding']
             if str(padding) in [str(v) for _, v in NAME_PADDING_OPTIONS]:
@@ -860,6 +898,154 @@ class GenericComicDownloaderGUI:
             self.append_status("已开启：下载完成后生成压缩包")
         else:
             self.append_status("已关闭：下载完成后不生成压缩包")
+
+    def _apply_human_mode(self):
+        """把『模拟人工下载』总开关 + 范围（全部/指定网站）折算成当前站点的生效值。
+
+        总开关关闭 -> 全部网站按固定参数下载；
+        总开关开启 + 范围「全部网站」-> 所有站点开启；
+        总开关开启 + 范围「仅指定网站」-> 只有名单里的站点开启，其它站点保持默认。
+        生效结果写入 config.HUMAN_MODE，下载/翻页前都会重新读一次。
+        """
+        try:
+            import config as app_config
+            switch_on = bool(self.human_mode_var.get())
+            scope = (self.human_scope_var.get() or 'all')
+            sites = list(self.human_site_list or [])
+            current_site = self.site_var.get() if hasattr(self, 'site_var') else ''
+            if not switch_on:
+                effective = False
+            elif scope == 'all' or not sites:
+                effective = True
+            else:
+                effective = current_site in sites
+            app_config.HUMAN_MODE = effective
+            app_config.HUMAN_MODE_SCOPE = scope
+            app_config.HUMAN_MODE_SITES = sites
+            self._refresh_human_scope_label()
+            return effective
+        except Exception as e:
+            print(f"应用模拟人工开关失败: {e}")
+            return None
+
+    def _refresh_human_scope_label(self):
+        """刷新开关右侧的范围说明文字（含当前站点的实际生效状态）"""
+        if not getattr(self, 'human_scope_label', None):
+            return
+        switch_on = bool(self.human_mode_var.get())
+        if not switch_on:
+            text = "当前：已关闭（全部网站按固定参数下载）"
+        elif self.human_scope_var.get() == 'all' or not self.human_site_list:
+            text = "当前：全部网站开启"
+        else:
+            names = self.human_site_list
+            shown = '、'.join(names[:3]) + (f" 等 {len(names)} 个" if len(names) > 3 else '')
+            current_site = self.site_var.get() if hasattr(self, 'site_var') else ''
+            state = '已开启' if current_site in names else '未开启'
+            text = f"范围：仅 {shown}；当前站点{state}"
+        try:
+            self.human_scope_label.config(text=text)
+        except Exception:
+            pass
+
+    def on_human_mode_change(self):
+        """模拟人工下载开关切换：立即生效并提示"""
+        enabled = self._apply_human_mode()
+        if enabled is None:
+            return
+        if enabled:
+            self.append_status("已开启模拟人工下载：每张随机停顿、低并发、章节间随机停顿（默认）")
+        else:
+            self.append_status("已关闭模拟人工下载：按设置里的固定线程/并发/间隔下载（速度更快，被封风险更高）")
+
+    def on_choose_human_sites(self):
+        """弹出『模拟人工下载范围』选择框：全部网站 / 仅指定网站（可多选）。"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("模拟人工下载范围")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+
+        ttk.Label(dialog, text="选择哪些网站使用『模拟人工下载』：",
+                  font=("微软雅黑", 10, "bold")).pack(anchor='w', padx=14, pady=(12, 6))
+
+        scope_var = tk.StringVar(value=self.human_scope_var.get() or 'all')
+        radio_all = ttk.Radiobutton(dialog, text="全部网站（默认）", variable=scope_var, value='all')
+        radio_all.pack(anchor='w', padx=16)
+        radio_sel = ttk.Radiobutton(dialog, text="仅指定的网站（可多选）", variable=scope_var, value='selected')
+        radio_sel.pack(anchor='w', padx=16, pady=(2, 6))
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(2, 6))
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        site_box = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, width=34, height=12,
+                              yscrollcommand=scrollbar.set, exportselection=False)
+        scrollbar.config(command=site_box.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        site_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        names = list(getattr(self, 'available_sites', []) or [])
+        for n in names:
+            site_box.insert(tk.END, n)
+        for i, n in enumerate(names):
+            if n in (self.human_site_list or []):
+                site_box.selection_set(i)
+
+        def _select_all():
+            site_box.selection_set(0, tk.END)
+
+        def _select_none():
+            site_box.selection_clear(0, tk.END)
+
+        def _toggle_state(*_args):
+            state = 'disabled' if scope_var.get() == 'all' else 'normal'
+            try:
+                site_box.config(state=state)
+            except Exception:
+                pass
+            for w in (btn_all, btn_none):
+                try:
+                    w.config(state=state)
+                except Exception:
+                    pass
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill=tk.X, padx=16, pady=(0, 4))
+        btn_all = ttk.Button(btn_row, text="全选", width=8, command=_select_all)
+        btn_all.pack(side=tk.LEFT)
+        btn_none = ttk.Button(btn_row, text="全不选", width=8, command=_select_none)
+        btn_none.pack(side=tk.LEFT, padx=(6, 0))
+        scope_var.trace_add('write', _toggle_state)
+
+        def _confirm():
+            scope = scope_var.get()
+            picked = [site_box.get(i) for i in site_box.curselection()] if scope == 'selected' else []
+            self.human_scope_var.set('selected' if scope == 'selected' else 'all')
+            self.human_site_list = picked
+            self._apply_human_mode()
+            if getattr(self, '_config_loaded', False):
+                self.save_config()
+            if scope == 'selected' and not picked:
+                self.append_status("模拟人工范围已设为『仅指定网站』，但还没选网站：当前站点按默认参数下载")
+            elif scope == 'selected':
+                self.append_status(f"模拟人工范围：仅 {len(picked)} 个网站（{'、'.join(picked[:3])}"
+                                   + ("…" if len(picked) > 3 else "") + "）")
+            else:
+                self.append_status("模拟人工范围：全部网站")
+            dialog.destroy()
+
+        def _cancel():
+            dialog.destroy()
+
+        action_row = ttk.Frame(dialog)
+        action_row.pack(fill=tk.X, padx=16, pady=(4, 12))
+        ttk.Button(action_row, text="确定", width=10, command=_confirm).pack(side=tk.RIGHT)
+        ttk.Button(action_row, text="取消", width=10, command=_cancel).pack(side=tk.RIGHT, padx=(0, 8))
+        _toggle_state()
+        dialog.wait_window()
 
     def show_page(self, page_name):
         """左侧边栏页面切换：'main' 主页 / 'settings' 设置 / 'convert' 格式转换 / 'translate' 汉化"""
@@ -1261,6 +1447,7 @@ class GenericComicDownloaderGUI:
             cookies_dir = self.cookies_path_var.get().strip() or DEFAULT_COOKIES_DIR
             
             self.save_config()
+            self._apply_human_mode()
             self.confirm_button.config(state=tk.DISABLED)
             self.append_status(f"使用站点: {site_name}")
             if comic_id:
