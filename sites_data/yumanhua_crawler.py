@@ -16,24 +16,26 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属速度档（v1.4.8） =====
-# 默认 'slow'：单线程、逐张下载，和之前一样慢，不额外开并发连接
-#   'slow'：1 线程，每张 +3.0s，每 8 张歇 6~14s，章间 15~35s（默认，最稳）
-#   't3'  ：3 线程，每张 +1.2s，每 10 张歇 4~8s，章间 10~25s
-#   't4'  ：4 线程，每张 +1.0s，每 12 张歇 4~10s，章间 10~25s
+# ===== 漫画客专属速度档（v1.4.9） =====
+# 默认 'std'：跟其他网站的正常节奏接近，但再放慢一点
+#   'std' ：默认。2 线程，每张 +1.0s，每 10 张歇 2~5s，章间 5~10s（约 0.9 张/秒）
+#   'slow'：最保守。1 线程，每张 +3.0s，每 8 张歇 6~14s，章间 15~35s
+#   't3'  ：3 线程，每张 +1.2s（约 0.9 张/秒）
+#   't4'  ：4 线程，每张 +1.0s（约 1.2 张/秒）
 #   't6'  ：6 线程，每张 +0.3s（实测约 3.3 张/秒）
 #   't8'  ：8 线程，每张 +0.2s（实测约 4.1 张/秒）
-# 需要提速时才改成 t3/t4/t6/t8；平常用 slow，避免开太多连接触发风控。
-SPEED_MODE = 'slow'
+# 需要更快时才改 t4/t6/t8；出现连续 403/429 就改回 'slow'。
+SPEED_MODE = 'std'
 
 _SPEED_PROFILES = {
+    'std':  dict(threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
     'slow': dict(threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
     't3':   dict(threads=3, conc=3, delay=1.2, every=10, lo=4.0, hi=8.0, chlo=10.0, chhi=25.0),
     't4':   dict(threads=4, conc=4, delay=1.0, every=12, lo=4.0, hi=10.0, chlo=10.0, chhi=25.0),
     't6':   dict(threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
     't8':   dict(threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
 }
-_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['slow'])
+_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['std'])
 
 
 class YumanhuaCrawler:
