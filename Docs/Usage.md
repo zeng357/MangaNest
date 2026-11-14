@@ -156,6 +156,8 @@ Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_c
 'chapter_pause_max': 35.0,
 ```
 
+**No-sleep switch (v1.6.6)**: the Home page button row has a **禁止休眠（下载时不自动睡眠）** checkbox (between 下载失败图片 and 退出). When ticked the program calls Windows `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)` for as long as it runs, so a multi-hour download is not interrupted by the PC going to sleep or blanking the screen. Untick it, or close the window / press 退出, and it resets to `ES_CONTINUOUS` so your normal power plan applies again. The state is stored in `config.json` as `prevent_sleep` and restored on the next launch.
+
 **Download logic (v1.6.5)**: settings → 下载设置 → **下载逻辑**. **新版（整批暂停）** = when the "every N images" pause triggers, every download thread waits together (nothing is fetched during the pause; best against sites that count batches). **旧版（逐张停顿）** = the v1.4.x behaviour, only the triggering thread sleeps and the others keep downloading (faster, but looks more like a bot). Stored as `download_engine` (`global` / `legacy`) in `config.json`, applies to all sites, no restart needed.
 
 **Human mode scope (v1.6.4)**: the 模拟人工下载 checkbox has a **选择网站…** button beside it. Choose **全部网站** to apply the human-like pacing everywhere (previous behaviour), or **仅指定的网站** and tick one or more sites; only those sites get random pauses + low concurrency, every other site runs at the program's default speed. Saved as `human_scope` / `human_sites` in `config.json`; switching sites re-evaluates automatically and the label shows whether the current site is covered.

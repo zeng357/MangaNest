@@ -93,6 +93,8 @@ class GenericComicDownloaderGUI:
         self.root.title("通用漫画下载器")
         self.root.geometry("960x720")
         self.root.resizable(True, True)
+        # 关闭窗口时释放禁止休眠状态并保存配置
+        self.root.protocol("WM_DELETE_WINDOW", self.on_app_close)
         
         self.crawler = None
         self.login_window_open = False
@@ -354,6 +356,9 @@ class GenericComicDownloaderGUI:
         self.proxy_source_var = tk.StringVar(value="file")
         self.proxy_browser_var = tk.StringVar(value="")
         self.proxy_allow_direct_var = tk.BooleanVar(value=True)
+        # 禁止休眠（主界面勾选）：下载期间阻止系统自动睡眠/关屏
+        self.prevent_sleep_var = tk.BooleanVar(value=False)
+        self._sleep_block_active = False
         # 初始化完成前禁止自动保存（避免构建期间 on_site_change 等以默认值覆盖 config.json）
         self._config_loaded = False
 
@@ -436,7 +441,13 @@ class GenericComicDownloaderGUI:
 
         ttk.Button(self.button_frame, text="清空状态", command=self.clear_status).pack(side=tk.LEFT, padx=3)
         ttk.Button(self.button_frame, text="下载失败图片", command=self.download_failed_images).pack(side=tk.LEFT, padx=3)
-        ttk.Button(self.button_frame, text="退出", command=root.quit).pack(side=tk.RIGHT, padx=3)
+        ttk.Checkbutton(
+            self.button_frame,
+            text="禁止休眠（下载时不自动睡眠）",
+            variable=self.prevent_sleep_var,
+            command=self.on_prevent_sleep_change
+        ).pack(side=tk.LEFT, padx=(8, 3))
+        ttk.Button(self.button_frame, text="退出", command=self.on_app_close).pack(side=tk.RIGHT, padx=3)
         self.confirm_button = ttk.Button(
             self.button_frame,
             text="开始下载",
@@ -779,6 +790,7 @@ class GenericComicDownloaderGUI:
                 'proxy_url': self.proxy_url_var.get().strip(),
                 'proxy_browser': self.proxy_browser_var.get().strip(),
                 'proxy_allow_direct': bool(self.proxy_allow_direct_var.get()),
+                'prevent_sleep': bool(self.prevent_sleep_var.get()),
             }
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -862,9 +874,72 @@ class GenericComicDownloaderGUI:
             self.proxy_browser_var.set(str(config.get('proxy_browser') or ''))
         if 'proxy_allow_direct' in config:
             self.proxy_allow_direct_var.set(bool(config.get('proxy_allow_direct')))
+        # 禁止休眠（主界面开关，默认关闭）
+        if 'prevent_sleep' in config:
+            self.prevent_sleep_var.set(bool(config.get('prevent_sleep')))
+        self._apply_prevent_sleep(bool(self.prevent_sleep_var.get()))
         # 配置恢复完成，此后设置变更才自动保存
         self._config_loaded = True
     
+    # ---------- 禁止休眠（Windows SetThreadExecutionState） ----------
+    def _apply_prevent_sleep(self, enable):
+        """开启/关闭系统防休眠。
+
+        ES_CONTINUOUS：设置持续有效，直到再次调用并只传 ES_CONTINUOUS 复位。
+        必须在长期存活的线程里调用（这里是 Tk 主线程）；非 Windows 平台直接跳过。
+        """
+        try:
+            import sys
+            if sys.platform != 'win32':
+                self._sleep_block_active = False
+                return False
+            import ctypes
+            ES_CONTINUOUS = 0x80000000
+            ES_SYSTEM_REQUIRED = 0x00000001
+            ES_DISPLAY_REQUIRED = 0x00000002
+            flags = ES_CONTINUOUS
+            if enable:
+                flags |= ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.SetThreadExecutionState.argtypes = [ctypes.c_ulong]
+            kernel32.SetThreadExecutionState.restype = ctypes.c_ulong
+            ok = bool(kernel32.SetThreadExecutionState(flags))
+            self._sleep_block_active = bool(enable and ok)
+            return ok
+        except Exception as e:
+            self._sleep_block_active = False
+            print(f"设置禁止休眠失败: {e}")
+            return False
+
+    def on_prevent_sleep_change(self):
+        """勾选/取消「禁止休眠」：立即生效并写入配置"""
+        enable = bool(self.prevent_sleep_var.get())
+        ok = self._apply_prevent_sleep(enable)
+        if enable and not ok:
+            self.append_status("⚠ 禁止休眠设置失败（系统拒绝），电脑仍可能自动睡眠")
+        elif enable:
+            self.append_status("已开启禁止休眠：下载期间电脑不会自动睡眠/关屏")
+        else:
+            self.append_status("已关闭禁止休眠：恢复系统电源计划")
+        if getattr(self, '_config_loaded', False):
+            try:
+                self.save_config()
+            except Exception:
+                pass
+
+    def on_app_close(self):
+        """关闭窗口：先释放禁止休眠，再保存配置退出"""
+        try:
+            if getattr(self, '_sleep_block_active', False):
+                self._apply_prevent_sleep(False)
+        finally:
+            if getattr(self, '_config_loaded', False):
+                try:
+                    self.save_config()
+                except Exception:
+                    pass
+            self.root.quit()
+
     def update_login_status(self):
         """更新登录状态显示"""
         site_name = self.site_var.get()
