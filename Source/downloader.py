@@ -139,6 +139,19 @@ _ACTIVE_PAUSE_EVERY = 0
 _ACTIVE_PAUSE_EXTRA_MIN = 0.0
 _ACTIVE_PAUSE_EXTRA_MAX = 0.0
 _IMAGE_SEQ = 0
+# 全局「整批暂停」时间戳：触发后所有下载线程都先等到这个时间再继续，
+# 避免只有一个线程在睡、其它线程还在偷偷下载（站点按批次计数更容易识别机器人）
+_PAUSE_UNTIL_TS = 0.0
+
+
+def wait_if_batch_paused():
+    """若当前处于整批暂停期，则阻塞到暂停结束（所有下载线程共用）。"""
+    while True:
+        with _RATE_LIMIT_LOCK:
+            remain = _PAUSE_UNTIL_TS - time.time()
+        if remain <= 0:
+            return
+        time.sleep(min(remain, 5.0))
 
 
 def set_active_download_delay(seconds):
@@ -216,7 +229,7 @@ def reset_active_chapter_pause():
 
 def set_active_image_breaks(every=0, extra_min=0.0, extra_max=0.0):
     """设置「每下 N 张额外停顿」的阅读节奏；every=0 表示关闭。"""
-    global _ACTIVE_PAUSE_EVERY, _ACTIVE_PAUSE_EXTRA_MIN, _ACTIVE_PAUSE_EXTRA_MAX, _IMAGE_SEQ
+    global _ACTIVE_PAUSE_EVERY, _ACTIVE_PAUSE_EXTRA_MIN, _ACTIVE_PAUSE_EXTRA_MAX, _IMAGE_SEQ, _PAUSE_UNTIL_TS
     try:
         every = int(every or 0)
     except Exception:
@@ -234,6 +247,7 @@ def set_active_image_breaks(every=0, extra_min=0.0, extra_max=0.0):
         _ACTIVE_PAUSE_EXTRA_MIN = lo
         _ACTIVE_PAUSE_EXTRA_MAX = hi
         _IMAGE_SEQ = 0
+        _PAUSE_UNTIL_TS = 0.0
 
 
 def get_active_image_breaks():
@@ -242,12 +256,15 @@ def get_active_image_breaks():
 
 
 def reset_active_image_breaks():
+    global _PAUSE_UNTIL_TS
+    with _RATE_LIMIT_LOCK:
+        _PAUSE_UNTIL_TS = 0.0
     set_active_image_breaks(0, 0.0, 0.0)
 
 
 def image_reading_break():
     """每下满 N 张图后额外停顿一次（模拟真人看几页歇一下），返回实际停顿秒数。"""
-    global _IMAGE_SEQ
+    global _IMAGE_SEQ, _PAUSE_UNTIL_TS
     if not human_mode_enabled():
         return 0.0
     with _RATE_LIMIT_LOCK:
@@ -262,14 +279,17 @@ def image_reading_break():
         lo, hi = hi, lo
     pause = random.uniform(lo, hi)
     if pause > 0:
-        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，按真人节奏歇 {pause:.1f}s")
+        with _RATE_LIMIT_LOCK:
+            # 整批暂停：所有线程都等到这个时间点，期间不再发任何图片请求
+            _PAUSE_UNTIL_TS = max(_PAUSE_UNTIL_TS, time.time() + pause)
+        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，整批暂停 {pause:.1f}s（约 {pause/60:.1f} 分钟）")
         time.sleep(pause)
     return pause
 
 
 async def image_reading_break_async():
     """协程版本的阅读停顿。"""
-    global _IMAGE_SEQ
+    global _IMAGE_SEQ, _PAUSE_UNTIL_TS
     if not human_mode_enabled():
         return 0.0
     with _RATE_LIMIT_LOCK:
@@ -284,7 +304,9 @@ async def image_reading_break_async():
         lo, hi = hi, lo
     pause = random.uniform(lo, hi)
     if pause > 0:
-        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，按真人节奏歇 {pause:.1f}s")
+        with _RATE_LIMIT_LOCK:
+            _PAUSE_UNTIL_TS = max(_PAUSE_UNTIL_TS, time.time() + pause)
+        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，整批暂停 {pause:.1f}s（约 {pause/60:.1f} 分钟）")
         await asyncio.sleep(pause)
     return pause
 
@@ -1150,6 +1172,7 @@ async def download_with_aiohttp(url, file_path, timeout=10, proxy=None):
     出口选择优先级：显式 proxy 参数 > 代理池（启用时按请求轮换）> 系统代理 > 直连。
     代理池模式下单张图会依次换不同出口重试，全失败后按配置决定是否回退直连。
     """
+    wait_if_batch_paused()
     pool = None if proxy else get_active_proxy_pool()
     if proxy:
         attempts = [proxy]
@@ -1236,6 +1259,7 @@ def download_with_requests(url, file_path, timeout=10, proxy=None):
 
     出口选择与 aiohttp 通道一致：显式 proxy > 代理池轮换 > 系统代理 > 直连。
     """
+    wait_if_batch_paused()
     pool = None if proxy else get_active_proxy_pool()
     if proxy:
         attempts = [{'http': proxy, 'https': proxy}]
