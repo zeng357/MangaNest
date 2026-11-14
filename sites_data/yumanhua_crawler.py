@@ -517,28 +517,41 @@ class YumanhuaCrawler:
                         barrier.wait(timeout=60)   # 三页同时开翻
                     except Exception:
                         pass
-                results.append(self.collect_chapter_images(info))
+                try:
+                    results.append(self.collect_chapter_images(info))
+                finally:
+                    info['done'] = True
 
+            starts = {}
             for info in batch:
+                info['done'] = False
+                info['closed'] = False
                 t = threading.Thread(target=wrapper, args=(info,))
                 threads.append(t)
+                starts[info['chapter_num']] = time.time()
                 t.start()
 
-            # 每个章节最多等 300 秒；超时强制关掉它的标签页，让卡住的 CDP 调用报错退出，
-            # 避免“一直不动、旧窗口也不关”的死等。
-            for t, info in zip(threads, batch):
-                t.join(timeout=300)
-                if t.is_alive():
-                    print(f"章节{info['chapter_num']} 超过300秒未完成，强制关闭标签页")
+            # 每章一滑到底就立刻关掉它自己的标签页（不用等其它章节），
+            # 单章超过 300 秒则强制关闭，避免“一直不动、旧窗口也不关”的死等。
+            while any(t.is_alive() for t in threads):
+                for info in batch:
                     tab = info.get('tab')
-                    if tab is not None:
+                    if info.get('closed') or tab is None:
+                        continue
+                    over_time = time.time() - starts[info['chapter_num']] > 300
+                    if info.get('done') or over_time:
+                        if over_time and not info.get('done'):
+                            print(f"章节{info['chapter_num']} 超过300秒未完成，强制关闭标签页")
                         try:
                             tab.close()
                         except Exception:
                             pass
-                    t.join(timeout=10)
+                        info['closed'] = True
+                        if info.get('done'):
+                            print(f"章节{info['chapter_num']} 采集完成，已关闭标签页")
+                time.sleep(0.3)
 
-            # 采完统一在主线程一次性关闭全部章节页（按 id 批量关，避免有个别页关不掉）
+            # 兜底：还有没关掉的一并关（按 id 批量关，避免个别页关不掉）
             ids = []
             for t in open_tabs:
                 try:
