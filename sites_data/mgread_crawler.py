@@ -1,6 +1,7 @@
 import time
 import re
 import json
+import random
 import threading
 from urllib.parse import quote
 
@@ -46,7 +47,27 @@ class MgreadCrawler:
         # 该站 CDN 会重置 requests 的 TLS 连接（10054），但 aiohttp 可直连 200，
         # 故默认走协程(aiohttp)通道，不用纯多线程(requests)通道。
         'download_mode': 'coroutine',
+        # 2026-11 起站点前置 Cloudflare 人机验证（"Just a moment"）：
+        # 固定浏览器配置目录，手动验证一次后 cf_clearance 长期复用，不用每次重验。
+        'persistent_profile': True,
+        'challenge_wait': 240,
     }
+
+    # 页面状态探测：内容是否就绪 / 是否 Cloudflare 人机验证 / 是否连接被重置
+    # 挑战判定只认「标题特征 / 正文提示 / Turnstile 验证框」，不用 #challenge-* 元素
+    # 是否存在（正常页面 DOM 里也可能残留这些 id，会造成误判）
+    _PROBE_JS = (
+        "const sel=arguments[0];"
+        "const cnt=document.querySelectorAll(sel).length;"
+        "const t=(document.title||'');"
+        "const body=(document.body?document.body.innerText:'').slice(0,400);"
+        "const err=(location.href.indexOf('chrome-error://')===0)"
+        "||/ERR_CONNECTION|ERR_SSL|无法访问此页面|已重置连接/i.test(body);"
+        "const ch=t.indexOf('Just a moment')>-1||t.indexOf('Attention Required')>-1"
+        "||/verify you are human|checking your browser|确认您是真人/i.test(body)"
+        "||!!document.querySelector('iframe[src*=\"challenges.cloudflare.com\"]');"
+        "return {count:cnt, challenge:ch, err:err, title:t, href:location.href};"
+    )
 
     # 章节翻页上限（防死循环）
     _MAX_CHAPTER_PAGES = 300
@@ -133,6 +154,73 @@ class MgreadCrawler:
                 return 0
             time.sleep(interval)
 
+    def _probe(self, tab, selector):
+        """读取页面状态：count / challenge / err / title / href；失败返回空字典。"""
+        try:
+            return tab.run_js(self._PROBE_JS, selector) or {}
+        except Exception:
+            return {}
+
+    def _goto_ready(self, tab, url, selector, label='页面', attempts=4, timeout=None):
+        """打开 url 并等待内容就绪，自动处理站点侧两类拦截：
+
+          1. Cloudflare 人机验证（`Just a moment` / Turnstile 复选框）：
+             有头模式下提示用户手动点一次，程序轮询等待；无头模式直接报错并指引切有头
+             （不实现任何自动破解验证码的逻辑）；
+          2. 连接被重置（ERR_CONNECTION_RESET，该站常见）：
+             自动刷新重试，最多 attempts 次，间隔逐次加长（含随机抖动）。
+        """
+        timeout = timeout or int(self.CONFIG.get('challenge_wait', 240))
+        last_err = ''
+        for attempt in range(1, attempts + 1):
+            try:
+                tab.get(url, timeout=15)
+            except Exception as e:
+                last_err = f"打开失败: {e}"
+                print(f"{label} 打开异常（第{attempt}/{attempts}次）: {e}")
+            else:
+                start = time.time()
+                warned = False
+                while time.time() - start < timeout:
+                    st = self._probe(tab, selector)
+                    if st.get('count'):
+                        if warned:
+                            print(f"{label} 已通过人机验证，继续执行")
+                        if attempt > 1:
+                            print(f"{label} 第{attempt}次尝试成功")
+                        return True
+                    if st.get('err'):
+                        last_err = '连接被重置(ERR_CONNECTION_RESET)'
+                        print(f"{label} 连接被重置，准备重试（第{attempt}/{attempts}次）")
+                        break
+                    if st.get('challenge') and not warned:
+                        warned = True
+                        if getattr(self.crawler, 'headless', False):
+                            raise Exception(
+                                f"{label} 命中 Cloudflare 人机验证，无头模式无法完成验证。"
+                                "请在 设置 → 浏览器设置 切换为「有头（显示窗口）」，"
+                                "重新运行并在弹出的窗口里完成一次『Verify you are human』；"
+                                "验证结果会保存到持久化配置目录，之后可直接用无头模式。"
+                            )
+                        print(f"{label} 遇到 Cloudflare 人机验证：请在弹出的浏览器窗口中"
+                              "完成『Verify you are human』验证，程序会自动等待并通过。")
+                    else:
+                        last_err = '页面内容超时未出现'
+                    time.sleep(1.2)
+                else:
+                    # 等待超时（既没就绪也没报错）
+                    if warned and not getattr(self.crawler, 'headless', False):
+                        last_err = '人机验证未在时限内完成'
+                    print(f"{label} 等待超时（{timeout}s，第{attempt}/{attempts}次）")
+            if attempt < attempts:
+                wait = 2.0 + attempt * 1.5 + random.uniform(0, 1.5)
+                time.sleep(wait)
+        raise Exception(
+            f"{label} 连续 {attempts} 次尝试仍未就绪（{last_err or '原因未知'}）。"
+            "若为 Cloudflare 人机验证请切到「有头（显示窗口）」模式手动验证一次；"
+            "若为连接重置请稍后重试或更换网络出口。"
+        )
+
     def _rest_search(self, keyword, per_page=20):
         """走 WordPress REST 搜索接口（/wp-json/wp/v2/search）取候选作品。
 
@@ -217,21 +305,27 @@ class MgreadCrawler:
             return ''
 
     def _fetch_detail_has_chapters(self, url):
-        """在当前标签内 fetch 候选详情页 HTML，正则统计章节链接数，预筛空壳。
+        """在当前标签内 fetch 候选详情页 HTML，统计章节链接数，预筛空壳。
 
-        不开新标签，避免逐个开详情标签的加载阻塞；fetch 异常时保守返回 True，
-        判不准时放行交由后续开标签复核，避免误杀正常作品。
+        返回 True=含章节；False=明确判定为空壳（HTTP 200 且确无章节链接）。
+        fetch 失败、非 200、或返回 Cloudflare 挑战页时无法判断，保守放行（True），
+        避免把正常作品误杀成空壳。
         """
         try:
             js = (
                 "return (async () => {"
                 "const r = await fetch(arguments[0], {credentials:'include'});"
                 "const t = await r.text();"
-                "return (t.match(/\\/chapter-\\d+\\//g)||[]).length;"
+                "const chl=/Just a moment|challenge-platform|verify you are human/i.test(t);"
+                "return {status:r.status, chl:chl, n:(t.match(/\\/chapter-\\d+\\//g)||[]).length};"
                 "})();"
             )
-            n = self.crawler.tab.run_js(js, url) or 0
-            return n > 0
+            st = self.crawler.tab.run_js(js, url) or {}
+            if st.get('n'):
+                return True
+            if st.get('status') != 200 or st.get('chl'):
+                return True   # 无法判断（被验证页/错误页拦截），保守放行
+            return bool(st.get('n'))
         except Exception:
             return True
 
@@ -253,7 +347,8 @@ class MgreadCrawler:
             detail_url = f"https://mgread.io/manga/{slug}/"
             print(f"按链接/ID打开详情页: {detail_url}")
             target_comic_tab = self.crawler.page.new_tab(detail_url)
-            self._wait_chapter_links(target_comic_tab)
+            self._goto_ready(target_comic_tab, detail_url,
+                             '.chapter-list a[href*="/chapter-"]', label='详情页')
             return target_comic_tab
 
         search_url = f"https://mgread.io/?s={quote(comic_name)}"
@@ -276,6 +371,12 @@ class MgreadCrawler:
                 ".map(a=>({href:a.getAttribute('href'), text:(a.innerText||'').trim()}));"
             )
             self.crawler.tab.get(search_url, timeout=8)
+            # 搜索页可能先落到人机验证或被重置；最多等 60s，失败交给下面的重试循环
+            try:
+                self._goto_ready(self.crawler.tab, search_url, 'a[href*="/manga/"]',
+                                 timeout=60, label='搜索结果页', attempts=3)
+            except Exception as e:
+                print(f"搜索结果页等待未就绪: {e}")
 
             # 搜索页偶发加载慢/被重置/挑战门刷新，轮询等待结果链接出现，最多重试 3 次
             items = []
@@ -330,7 +431,8 @@ class MgreadCrawler:
                 print(f"跳过空壳/无章节作品: {cand['url']}")
                 continue
             chosen_tab = self.crawler.page.new_tab(cand['url'])
-            self._wait_chapter_links(chosen_tab)
+            self._goto_ready(chosen_tab, cand['url'], '.chapter-list a[href*="/chapter-"]',
+                             label='详情页')
             print(f"搜索到: {cand['text']} -> {cand['url']}")
             break
 
@@ -409,8 +511,9 @@ class MgreadCrawler:
                 page_url = f"{base}/chapter/page/{page_no}/#chapter-list"
 
             try:
-                target_comic_tab.get(page_url, timeout=8)
-                time.sleep(1.0)
+                self._goto_ready(target_comic_tab, page_url,
+                                 '.chapter-list a[href*="/chapter-"]',
+                                 label=f'章节第{page_no}页', attempts=3)
                 raw = target_comic_tab.run_js(
                     "return Array.from(document.querySelectorAll"
                     "('.chapter-list a[href*=\"/chapter-\"]'))"
@@ -544,18 +647,9 @@ class MgreadCrawler:
         chapter_tab = None
         try:
             chapter_tab = main_tab.new_tab(chapter_url)
-            time.sleep(1.5)
-
-            # 等待阅读容器出现（少量重试）
-            for attempt in range(3):
-                n = chapter_tab.run_js(
-                    "return document.querySelectorAll('.chapter-body img').length"
-                ) or 0
-                if n > 0:
-                    break
-                if attempt < 2:
-                    chapter_tab.get(chapter_url, timeout=8)
-                    time.sleep(1.0)
+            # 阅读页同样可能被人机验证或连接重置拦住：等验证通过 + 图片容器就绪
+            self._goto_ready(chapter_tab, chapter_url, '.chapter-body img',
+                             label=f'章节{chapter_num}阅读页', attempts=3)
 
             herf_list = self._collect_images_from_page(chapter_tab)
         except Exception as e:
@@ -575,9 +669,23 @@ class MgreadCrawler:
             'herf_list': herf_list,
         }
 
+    def _ensure_site_clear(self):
+        """开跑前先过一次人机验证：主标签打开首页，等验证通过（失败则抛出明显报错）。
+
+        通过后 cf_clearance 落在持久化配置目录，后续详情页/章节页/阅读页复用同一会话。
+        """
+        try:
+            self.crawler.tab.get('https://mgread.io/', timeout=10)
+        except Exception as e:
+            print(f"打开首页失败: {e}")
+        self._goto_ready(self.crawler.tab, 'https://mgread.io/',
+                         'a[href*="/manga/"], .chapter-list', label='站点首页', attempts=3)
+
     def collect_chapters_images(self, target_comic_tab, chapter_start=1, chapter_end=0,
                                 max_threads=3, progress_callback=None):
         print(f"设置最大同时收集线程数: {max_threads}")
+
+        self._ensure_site_clear()
 
         entries = self._collect_chapter_entries(target_comic_tab)
         all_chapters_num = len(entries)

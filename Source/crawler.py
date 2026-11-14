@@ -73,6 +73,7 @@ class ComicCrawler:
         self.login_mode = login_mode
         self.login_completed = False
         self.cookies_dir = cookies_dir if cookies_dir else DEFAULT_COOKIES_DIR
+        self.headless = bool(headless)
 
         # 站点是否需要浏览器：纯requests实现的站点（如喜漫漫画）声明NEEDS_BROWSER=False，
         # 跳过浏览器启动（浏览器打开慢、且favcomic等站点代理出口被WAF拦截需直连）
@@ -113,8 +114,19 @@ class ComicCrawler:
         print(f"使用调试端口: {debug_port}")
         
         # 每次启动使用独立的用户数据临时目录，避免复用残留目录导致浏览器进程连接异常
+        # 例外：站点声明 persistent_profile 时使用固定目录，让 Cloudflare 人机验证的
+        # cf_clearance 等 cookie 跨次运行保留（验证一次后长期复用，不用每次重验）
         import tempfile
-        user_data_path = tempfile.mkdtemp(prefix='comic_dl_')
+        if self.site_config.get('persistent_profile'):
+            profile_dir = os.path.join(tempfile.gettempdir(), f'comic_dl_profile_{self.site_name}')
+            try:
+                os.makedirs(profile_dir, exist_ok=True)
+            except Exception:
+                pass
+            user_data_path = profile_dir
+            print(f"该站点使用持久化浏览器配置目录（保留人机验证结果）: {profile_dir}")
+        else:
+            user_data_path = tempfile.mkdtemp(prefix='comic_dl_')
         co.set_user_data_path(user_data_path)
         
         # 禁用窗口遮挡检测与后台节流：窗口被遮挡/最小化时Chrome会把rAF节流到~1fps，

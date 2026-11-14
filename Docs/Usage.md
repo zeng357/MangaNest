@@ -156,6 +156,8 @@ Per-site crawlers can still declare tighter limits in their `CONFIG` (`chapter_c
 'chapter_pause_max': 35.0,
 ```
 
+**mgread.io verification (v1.6.2)**: every page is behind a Cloudflare “Just a moment” check. Run once in **有头（显示窗口）** mode and complete the “Verify you are human” box; the browser profile for this site is persistent, so the clearance cookie is reused on later runs and headless works afterwards. Pages that return `ERR_CONNECTION_RESET` are retried automatically (4 attempts, increasing backoff). No CAPTCHA is solved automatically — if you see the checkbox, click it.
+
 **yumanhua batch mode (v1.6.1)**: this site is counted by request volume, so `SPEED_MODE` defaults to `'batch10'`: download 10 images → **all threads pause 150–300 s** (a shared pause gate in `downloader.py`, so no thread keeps fetching while another sleeps) → next 10 images; between chapters another 300–600 s; 2 threads / 2 image concurrency for this site only. Roughly 12–25 min per 50-image chapter. Other sites are unaffected. Switch to `'default'` if you want the normal speed back.
 
 **Human mode (v1.6.0)**: the Settings page has a “模拟人工下载” checkbox, **on by default and shared by all sites**. It takes effect immediately and is stored in `config.json` as `human_mode`. When on: 0.3–0.9 s random pause per image, ≤3 image concurrency, ≤2 download threads, 1.5–4.0 s between chapters, random User-Agent and short pauses after browser navigation. When off: downloads use the thread/concurrency/delay values from Settings as-is.
