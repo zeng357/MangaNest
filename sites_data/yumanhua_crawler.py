@@ -16,6 +16,13 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
+# ===== 漫画客专属提速档开关（v1.4.5） =====
+# False：默认慢速档，最稳（每张 +3.0s，每 8 张歇 6~14s，章间 15~35s）
+# True ：提速档，约 1.9 倍速（每张 +1.5s，每 12 张歇 4~10s，章间 8~18s）
+# 实测：20 张样本 106.9s → 56.4s，单张 5.34s → 2.82s，未新增 403
+# 不建议再低于约 2.5s/张，连续数十章时更要用慢速档
+SPEED_UP = False
+
 
 class YumanhuaCrawler:
     """漫画客(yumanhua.com)爬虫 —— 已按源码项目规范重写（2026-09 重新解析核验）
@@ -60,17 +67,17 @@ class YumanhuaCrawler:
         # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
         # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）；
         # download_pause_every/extra_min/extra_max: 每下 N 张额外停一次（模拟看几页歇一会儿）
-        # 该站会按 IP 限流甚至整段封禁，宁可慢也不要触发：单章单线程、每张图 ≈3.3~3.9s、
-        # 每 8 张多停 6~14s、章间停 15~35s，翻页也在浏览器里按真人节奏一屏一屏滚
+        # 默认慢速：单章单线程、每张图 ≈3.3~3.9s、每 8 张多停 6~14s、章间 15~35s；
+        # SPEED_UP=True 时切成提速档：每张 ≈1.8~2.4s、每 12 张停 4~10s、章间 8~18s
         'chapter_concurrency': 1,
         'download_threads': 1,
         'download_concurrency': 1,
-        'download_delay': 3.0,
-        'download_pause_every': 8,
-        'download_pause_extra_min': 6.0,
-        'download_pause_extra_max': 14.0,
-        'chapter_pause_min': 15.0,
-        'chapter_pause_max': 35.0,
+        'download_delay': 1.5 if SPEED_UP else 3.0,
+        'download_pause_every': 12 if SPEED_UP else 8,
+        'download_pause_extra_min': 4.0 if SPEED_UP else 6.0,
+        'download_pause_extra_max': 10.0 if SPEED_UP else 14.0,
+        'chapter_pause_min': 8.0 if SPEED_UP else 15.0,
+        'chapter_pause_max': 18.0 if SPEED_UP else 35.0,
     }
 
     def __init__(self, crawler):
