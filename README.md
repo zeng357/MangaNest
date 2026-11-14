@@ -84,7 +84,7 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 - **15–35 s between chapters** (`chapter_pause_min` / `chapter_pause_max`)
 - Expected cost for this site: **~6–7 min per 50-page chapter** (≈2.5 min page turning + ≈3.5–4 min downloads), so a 94-chapter comic takes several hours — intentional, and the only reliable way to stay under the site's radar
 - The reading-break mechanism is generic: any crawler can declare `download_pause_every` in its `CONFIG`; sites that don't declare it are unaffected
-- **v1.5.1 — fix for "collected but never downloads"**: the parallel chapter-page default (`p3`, 3 tabs at once) has been rolled back to `'t8'` — one chapter page at a time, 8 download threads, +0.2 s per image, a 3–6 s break every 20 images, 5–12 s between chapters. Chapter tabs are now always closed in a `finally` block so leftover tabs can't block the download stage. `'p3'` is still selectable for short ranges. Verified end to end: 1 chapter, 52/52 images, 10 transient 403s all recovered by the built-in retry
+- **v1.5.2 — faster page flipping + fixed parallel collection**: the human-like scroll now advances 1.1–1.5 viewports per step with a 0.18–0.45 s pause (was 0.9–1.2 viewports / 0.35–0.8 s), and long breaks are rarer and shorter. Parallel chapter collection is rebuilt: tabs are opened and closed sequentially on the main thread and worker threads only drive their own already-open tab, which removes the `new_tab`/`close` cross-thread hang — the default is `p3` again (3 chapter pages + 8 download threads). Measured: collecting 3 chapters fell from 289 s → 141 s → **59 s**; the full 3-chapter run (collect + cover + 120 images) went 185.7 s → **126 s**, all 23 transient 403s recovered by the built-in retry
 
 ---
 

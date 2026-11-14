@@ -25,7 +25,7 @@ _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 #   'p3'  ：3 个章节页并行采集 + 8 线程下载（更快，但实测有概率卡住，仅短范围试用）
 # 2026-11-14 实测：单章 8 线程无间隔 30/30、2.6~2.8 张/秒。
 # 出现连续 403/429 或首页打不开，改回 'slow'。
-SPEED_MODE = 't8'
+SPEED_MODE = 'p3'
 
 _SPEED_PROFILES = {
     'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
@@ -308,30 +308,30 @@ class YumanhuaCrawler:
         max_screens = 260          # 安全上限，防止页面高度异常时死循环
         no_grow = 0
         while pos < total and screens < max_screens:
-            # 每屏滚动 90%~120% 视口高度，不会一步跨过整张图
-            pos = min(pos + int(vh * random.uniform(0.9, 1.2)), total)
+            # 每屏滚动 1.1~1.5 倍视口高度（仍然分段滚动，不会一步跨过整张图）
+            pos = min(pos + int(vh * random.uniform(1.1, 1.5)), total)
             try:
                 chapter_tab.run_js(f'window.scrollTo(0, {pos})')
             except Exception as e:
                 print(f"滚动失败: {e}")
                 break
-            # 每屏停留时间：像在看清画面
-            time.sleep(random.uniform(0.35, 0.8))
+            # 每屏停留时间：缩短到 0.18~0.45s，翻页更快但仍保留停顿
+            time.sleep(random.uniform(0.18, 0.45))
             screens += 1
 
-            # 每 10~16 屏回翻一点，模拟来回浏览
-            if screens % random.randint(10, 16) == 0 and pos > vh:
+            # 每 18~26 屏回翻一点，模拟来回浏览
+            if screens % random.randint(18, 26) == 0 and pos > vh:
                 back = max(0, pos - int(vh * random.uniform(0.2, 0.4)))
                 try:
                     chapter_tab.run_js(f'window.scrollTo(0, {back})')
-                    time.sleep(random.uniform(0.5, 1.0))
+                    time.sleep(random.uniform(0.3, 0.7))
                 except Exception:
                     pass
                 pos = back
 
-            # 每 12~18 屏多停一次（看图/发呆/等懒加载）
-            if screens % random.randint(12, 18) == 0:
-                time.sleep(random.uniform(2.5, 5.0))
+            # 每 20~30 屏多停一次（看图/发呆/等懒加载）
+            if screens % random.randint(20, 30) == 0:
+                time.sleep(random.uniform(1.5, 3.0))
 
             # 页面可能继续变长（懒加载），同步一次
             try:
@@ -349,9 +349,9 @@ class YumanhuaCrawler:
         # 到底后停一下，再回落一点（真人看完会顺手往回划）
         try:
             chapter_tab.run_js('window.scrollTo(0, document.body.scrollHeight)')
-            time.sleep(random.uniform(2.0, 4.0))
+            time.sleep(random.uniform(1.2, 2.4))
             chapter_tab.run_js('window.scrollBy(0, -%d)' % int(vh * random.uniform(0.15, 0.3)))
-            time.sleep(random.uniform(0.8, 1.6))
+            time.sleep(random.uniform(0.5, 1.0))
         except Exception:
             pass
         print(f"模拟真人翻页完成：{screens} 屏")
@@ -404,10 +404,13 @@ class YumanhuaCrawler:
         main_tab = chapter_info['main_tab']
         print(f"正在处理章节{chapter_num}: {chapter_url}")
 
-        chapter_tab = None
+        # 并行采集时，标签页由主线程统一创建/关闭（跨线程 new_tab/close 容易卡死）
+        chapter_tab = chapter_info.get('tab')
+        owns_tab = chapter_tab is None
         try:
-            chapter_tab = main_tab.new_tab(chapter_url)
-            time.sleep(2)
+            if chapter_tab is None:
+                chapter_tab = main_tab.new_tab(chapter_url)
+                time.sleep(2)
 
             retry_count = 0
             max_retries = 3
@@ -437,8 +440,8 @@ class YumanhuaCrawler:
             print(f"处理章节{chapter_num}时出错: {e}")
             herf_list = []
         finally:
-            # 无论成功/失败都关掉章节页，避免多标签残留把后续下载拖死
-            if chapter_tab is not None:
+            # 自己创建的标签才由自己关；并行模式由主线程统一关，避免跨线程关页卡死
+            if owns_tab and chapter_tab is not None:
                 try:
                     chapter_tab.close()
                 except Exception:
@@ -489,6 +492,20 @@ class YumanhuaCrawler:
                 })
                 print(f"准备处理第{num}章节: {chapter_urls[num - 1]['url']}")
 
+            # 并行：标签页在本线程（主线程）顺序创建，工作线程只操作自己的标签页。
+            # DrissionPage 在同一线程里 new_tab/close 才稳，跨线程建页/关页是之前卡住的根因。
+            open_tabs = []
+            if len(batch) > 1:
+                for info in batch:
+                    try:
+                        t = self.crawler.page.new_tab(info['url'])
+                        time.sleep(1.2)
+                        info['tab'] = t
+                        open_tabs.append(t)
+                    except Exception as e:
+                        print(f"章节{info['chapter_num']} 预开标签失败，改为串行处理: {e}")
+                        info['tab'] = None
+
             threads, results = [], []
             def wrapper(info):
                 results.append(self.collect_chapter_images(info))
@@ -499,6 +516,15 @@ class YumanhuaCrawler:
                 t.start()
             for t in threads:
                 t.join()
+
+            # 采完统一在主线程关页
+            for t in open_tabs:
+                try:
+                    t.close()
+                except Exception:
+                    pass
+            if open_tabs:
+                time.sleep(0.5)
 
             all_chapters_data.extend(results)
             for _ in results:
