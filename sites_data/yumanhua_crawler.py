@@ -16,18 +16,15 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属速度档（v1.5.4） =====
-# 默认 'multi'：3 个章节页并行采集 + 下载沿用全局线程（多线程，速度接近其他站）
-#   'multi'  ：默认。3 章并行翻页，滑到底立即关页再开下一张；不加额外延迟/停顿
-#   'default'：完全同其他站点，但一次只开 1 个章节页（最稳）
-#   't8'  ：单章节页 + 8 线程、每张 +0.2s、每 20 张歇 3~6s
-#   'std' ：2 线程、每张 +1.0s；'slow'：1 线程、每张 +3.0s（最保守）
-#   't3'/'t4'/'t6'：单章节页 3/4/6 线程；'p3'：3 章并行 + 8 线程 + 限速
-SPEED_MODE = 'multi'
+# ===== 漫画客速度档（v1.5.6） =====
+# 默认 'default'：完全按程序自带的默认下载参数走 —— 不设章节并发上限、不改线程/并发/间隔/停顿。
+# 章节并发、下载线程数、首次/重试超时等，全部由 GUI 上的设置与程序默认值决定。
+# 其它档只在需要时手动切换（'slow' 最保守，'p3' 曾经的高并发档）。
+SPEED_MODE = 'default'
 
 _SPEED_PROFILES = {
+    'default': dict(cc=0, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
     'multi':   dict(cc=3, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
-    'default': dict(cc=1, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
     'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
     'std':  dict(cc=1, threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
     'slow': dict(cc=1, threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
