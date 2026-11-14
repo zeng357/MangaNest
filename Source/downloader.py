@@ -145,13 +145,29 @@ _PAUSE_UNTIL_TS = 0.0
 
 
 def wait_if_batch_paused():
-    """若当前处于整批暂停期，则阻塞到暂停结束（所有下载线程共用）。"""
+    """若当前处于整批暂停期，则阻塞到暂停结束（所有下载线程共用）。
+
+    旧版下载逻辑（config.DOWNLOAD_ENGINE='legacy'）不启用该门：
+    停顿只发生在触发「每 N 张歇一下」的那个线程里，其它线程继续下载。
+    """
+    if not batch_gate_enabled():
+        return
     while True:
         with _RATE_LIMIT_LOCK:
             remain = _PAUSE_UNTIL_TS - time.time()
         if remain <= 0:
             return
         time.sleep(min(remain, 5.0))
+
+
+def batch_gate_enabled():
+    """下载逻辑开关：'global'=新版（整批暂停，所有线程一起停）/ 'legacy'=旧版（仅当前线程停）。"""
+    try:
+        import config
+        engine = str(getattr(config, 'DOWNLOAD_ENGINE', 'global') or 'global').lower()
+    except Exception:
+        engine = 'global'
+    return engine != 'legacy'
 
 
 def set_active_download_delay(seconds):
@@ -279,10 +295,14 @@ def image_reading_break():
         lo, hi = hi, lo
     pause = random.uniform(lo, hi)
     if pause > 0:
-        with _RATE_LIMIT_LOCK:
-            # 整批暂停：所有线程都等到这个时间点，期间不再发任何图片请求
-            _PAUSE_UNTIL_TS = max(_PAUSE_UNTIL_TS, time.time() + pause)
-        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，整批暂停 {pause:.1f}s（约 {pause/60:.1f} 分钟）")
+        if batch_gate_enabled():
+            with _RATE_LIMIT_LOCK:
+                # 整批暂停：所有线程都等到这个时间点，期间不再发任何图片请求
+                _PAUSE_UNTIL_TS = max(_PAUSE_UNTIL_TS, time.time() + pause)
+            print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，整批暂停 {pause:.1f}s（约 {pause/60:.1f} 分钟）")
+        else:
+            # 旧版逻辑：只有当前线程停，其它线程照常下载
+            print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，本线程停顿 {pause:.1f}s（旧版下载逻辑）")
         time.sleep(pause)
     return pause
 
@@ -304,9 +324,12 @@ async def image_reading_break_async():
         lo, hi = hi, lo
     pause = random.uniform(lo, hi)
     if pause > 0:
-        with _RATE_LIMIT_LOCK:
-            _PAUSE_UNTIL_TS = max(_PAUSE_UNTIL_TS, time.time() + pause)
-        print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，整批暂停 {pause:.1f}s（约 {pause/60:.1f} 分钟）")
+        if batch_gate_enabled():
+            with _RATE_LIMIT_LOCK:
+                _PAUSE_UNTIL_TS = max(_PAUSE_UNTIL_TS, time.time() + pause)
+            print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，整批暂停 {pause:.1f}s（约 {pause/60:.1f} 分钟）")
+        else:
+            print(f"  ⏸ 已下 {_IMAGE_SEQ} 张，本线程停顿 {pause:.1f}s（旧版下载逻辑）")
         await asyncio.sleep(pause)
     return pause
 

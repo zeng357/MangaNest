@@ -330,6 +330,8 @@ class GenericComicDownloaderGUI:
         self.thread_var = tk.StringVar(value="5")
         self.download_thread_var = tk.StringVar(value="6")
         self.download_mode_var = tk.StringVar(value="coroutine")
+        # 下载逻辑：new=当前版本(含重试/人工节奏/整批暂停)，legacy=v1.4.0 之前那套
+        self.download_logic_var = tk.StringVar(value="new")
         self.first_timeout_var = tk.StringVar(value="8")
         self.retry_timeout_var = tk.StringVar(value="15")
         self.browser_type_var = tk.StringVar(value="edge")
@@ -340,6 +342,8 @@ class GenericComicDownloaderGUI:
         self.human_mode_var = tk.BooleanVar(value=True)
         self.human_scope_var = tk.StringVar(value='all')   # all / selected
         self.human_site_list = []                         # 仅 selected 时生效的站点名单
+        # 下载逻辑：global=新版（整批暂停，所有线程一起停）/ legacy=旧版（仅触发线程停）
+        self.download_engine_var = tk.StringVar(value='global')
         self.image_name_padding_var = tk.StringVar(value=str(DEFAULT_IMAGE_NAME_PADDING))
         self.chapter_folder_naming_var = tk.StringVar(value=DEFAULT_CHAPTER_FOLDER_NAMING)
         self.window_size_var = tk.StringVar(value="medium")
@@ -355,10 +359,12 @@ class GenericComicDownloaderGUI:
 
         # 通用设置任一选项变化即自动保存（设置面板修改即时生效）
         for _var in (self.thread_var, self.download_thread_var, self.download_mode_var,
+                     self.download_logic_var,
                      self.first_timeout_var, self.retry_timeout_var,
                      self.browser_type_var, self.browser_mode_var, self.browser_path_var,
                      self.create_zip_var, self.image_name_padding_var,
                      self.chapter_folder_naming_var, self.human_mode_var,
+                     self.download_engine_var,
                      self.proxy_enabled_var, self.proxy_file_var, self.proxy_url_var,
                      self.proxy_source_var, self.proxy_browser_var,
                      self.proxy_allow_direct_var):
@@ -605,6 +611,15 @@ class GenericComicDownloaderGUI:
         ttk.Radiobutton(mode_row, text="协程", variable=self.download_mode_var, value="coroutine").pack(side=tk.LEFT)
         ttk.Radiobutton(mode_row, text="多线程", variable=self.download_mode_var, value="thread_only").pack(side=tk.LEFT, padx=(12, 0))
 
+        # 下载逻辑：新版=整批暂停门（所有线程一起停）/ 旧版=只有触发停顿的线程停
+        ttk.Label(dl_left, text="下载逻辑:").grid(row=3, column=0, sticky='e', padx=(0, 8), pady=4)
+        engine_row = ttk.Frame(dl_left)
+        engine_row.grid(row=3, column=1, sticky='w', pady=4)
+        ttk.Radiobutton(engine_row, text="新版（整批暂停）", variable=self.download_engine_var,
+                        value="global", command=self.on_download_engine_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(engine_row, text="旧版（逐张停顿）", variable=self.download_engine_var,
+                        value="legacy", command=self.on_download_engine_change).pack(side=tk.LEFT, padx=(12, 0))
+
         # 右半：下载线程 / 重试超时 / 压缩包
         ttk.Label(dl_right, text="下载线程:").grid(row=0, column=0, sticky='e', padx=(0, 8), pady=4)
         ttk.Spinbox(dl_right, from_=1, to=32, textvariable=self.download_thread_var, width=7).grid(row=0, column=1, sticky='w', pady=4)
@@ -635,6 +650,21 @@ class GenericComicDownloaderGUI:
             human_row, text="当前：全部网站开启", font=("微软雅黑", 9), foreground="gray"
         )
         self.human_scope_label.pack(side=tk.LEFT, padx=(8, 0))
+
+        # 下载逻辑切换：旧版（v1.4.0 之前）/ 新版（当前）
+        logic_row = ttk.Frame(dl_frame)
+        logic_row.grid(row=2, column=0, columnspan=2, sticky='w', padx=4, pady=(6, 2))
+        ttk.Label(logic_row, text="下载逻辑:").pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            logic_row, text="新版（当前）", variable=self.download_logic_var, value="new",
+            command=self.on_download_logic_change
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Radiobutton(
+            logic_row, text="旧版（v1.4.0 之前）", variable=self.download_logic_var, value="legacy",
+            command=self.on_download_logic_change
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(logic_row, text="旧版=原始下载（无多轮重试/人工节奏/整批暂停）",
+                  font=("微软雅黑", 9), foreground="gray").pack(side=tk.LEFT, padx=(8, 0))
 
         # ---- 浏览器设置 ----
         browser_frame = ttk.LabelFrame(self.page_settings, text="浏览器设置", style="Card.TLabelframe")
@@ -729,6 +759,7 @@ class GenericComicDownloaderGUI:
                 'max_tabs': self.thread_var.get().strip(),
                 'download_threads': self.download_thread_var.get().strip(),
                 'download_mode': self.download_mode_var.get(),
+                'download_logic': self.download_logic_var.get(),
                 'first_timeout': self.first_timeout_var.get().strip(),
                 'retry_timeout': self.retry_timeout_var.get().strip(),
                 'browser_type': self.browser_type_var.get(),
@@ -738,6 +769,7 @@ class GenericComicDownloaderGUI:
                 'human_mode': bool(self.human_mode_var.get()),
                 'human_scope': self.human_scope_var.get(),
                 'human_sites': list(self.human_site_list or []),
+                'download_engine': self.download_engine_var.get(),
                 'image_name_padding': self.image_name_padding_var.get(),
                 'chapter_folder_naming': self.chapter_folder_naming_var.get(),
                 'window_size': self.window_size_var.get(),
@@ -765,6 +797,7 @@ class GenericComicDownloaderGUI:
         config = self.load_config()
         if not config:
             self._apply_human_mode()
+            self._apply_download_engine()
             self._config_loaded = True
             return
         mapping = {
@@ -780,6 +813,11 @@ class GenericComicDownloaderGUI:
                 var.set(config[key])
         if config.get('download_mode') in ('coroutine', 'thread_only'):
             self.download_mode_var.set(config['download_mode'])
+        if config.get('download_engine') in ('global', 'legacy'):
+            self.download_engine_var.set(config['download_engine'])
+        if config.get('download_logic') in ('new', 'legacy'):
+            self.download_logic_var.set(config['download_logic'])
+        self._apply_download_logic()
         if config.get('browser_type') in ('edge', 'chrome'):
             self.browser_type_var.set(config['browser_type'])
         if config.get('browser_mode') in ('headed', 'headless'):
@@ -797,6 +835,7 @@ class GenericComicDownloaderGUI:
             self.human_site_list = [s for s in saved_sites if (not valid or s in valid)]
         # 无论有没有存过，都把当前开关状态写进 config.HUMAN_MODE（缺省开启）
         self._apply_human_mode()
+        self._apply_download_engine()
         if 'image_name_padding' in config:
             padding = config['image_name_padding']
             if str(padding) in [str(v) for _, v in NAME_PADDING_OPTIONS]:
@@ -892,12 +931,66 @@ class GenericComicDownloaderGUI:
             return "原样（1、2、3...）"
         return f"{padding}位补零（{'0' * (padding - 1)}1、{'0' * (padding - 1)}2...）"
 
+    def _apply_download_engine(self):
+        """把『下载逻辑』选择写进 config.DOWNLOAD_ENGINE（立即生效）。"""
+        try:
+            import config as app_config
+            engine = self.download_engine_var.get()
+            app_config.DOWNLOAD_ENGINE = 'legacy' if engine == 'legacy' else 'global'
+            return app_config.DOWNLOAD_ENGINE
+        except Exception as e:
+            print(f"应用下载逻辑失败: {e}")
+            return None
+
+    def on_download_engine_change(self):
+        """下载逻辑切换：立即生效并提示"""
+        engine = self._apply_download_engine()
+        if engine is None:
+            return
+        if engine == 'legacy':
+            self.append_status("下载逻辑：旧版（每 N 张只有当前线程停顿，其它线程继续下载）")
+        else:
+            self.append_status("下载逻辑：新版（每 N 张所有线程一起暂停，整批停完再继续，防按批次风控）")
+
     def on_create_zip_change(self):
         """压缩包选项改变时的回调"""
         if self.create_zip_var.get():
             self.append_status("已开启：下载完成后生成压缩包")
         else:
             self.append_status("已关闭：下载完成后不生成压缩包")
+
+    def _apply_download_logic(self):
+        """把『下载逻辑』选项写进 config.DOWNLOAD_LOGIC（下载前生效）"""
+        try:
+            import config as app_config
+            logic = 'legacy' if str(self.download_logic_var.get()).lower() == 'legacy' else 'new'
+            app_config.DOWNLOAD_LOGIC = logic
+            return logic
+        except Exception as e:
+            print(f"应用下载逻辑设置失败: {e}")
+            return None
+
+    def _get_download_impl_module(self):
+        """按当前设置返回下载实现模块（旧版/新版）"""
+        try:
+            import config as app_config
+            if str(getattr(app_config, 'DOWNLOAD_LOGIC', 'new')).lower() == 'legacy':
+                import downloader_legacy
+                return downloader_legacy
+        except Exception:
+            pass
+        import downloader
+        return downloader
+
+    def on_download_logic_change(self):
+        """切换下载逻辑：立即保存并提示"""
+        logic = self._apply_download_logic()
+        if logic is None:
+            return
+        if logic == 'legacy':
+            self.append_status("已切换到旧版下载逻辑（v1.4.0 之前）：原始并发/重试方式，人工节奏与整批暂停不生效")
+        else:
+            self.append_status("已切换到新版下载逻辑（当前）：aiohttp 优先 + 多轮重下 + 人工节奏 + 整批暂停")
 
     def _apply_human_mode(self):
         """把『模拟人工下载』总开关 + 范围（全部/指定网站）折算成当前站点的生效值。
@@ -1448,6 +1541,7 @@ class GenericComicDownloaderGUI:
             
             self.save_config()
             self._apply_human_mode()
+            self._apply_download_logic()
             self.confirm_button.config(state=tk.DISABLED)
             self.append_status(f"使用站点: {site_name}")
             if comic_id:
@@ -1598,12 +1692,11 @@ class GenericComicDownloaderGUI:
                     browser_path = self.browser_path_var.get().strip()
                     headless = self.browser_mode_var.get() == "headless"
                     cookies_dir = self.cookies_path_var.get().strip() or DEFAULT_COOKIES_DIR
+                    dl_impl = self._get_download_impl_module()
                     # 浏览器重试会重新生成文件名，需恢复命名规则
-                    from downloader import set_active_name_padding
-                    set_active_name_padding(int(self.image_name_padding_var.get().strip() or 0))
+                    dl_impl.set_active_name_padding(int(self.image_name_padding_var.get().strip() or 0))
                     self.append_status(f"浏览器渲染模式({data.get('render_mode')})：重跑失败章节的浏览器提取，站点: {retry_site}")
-                    from downloader import retry_failed_chapters_via_browser
-                    still_failed, all_success = retry_failed_chapters_via_browser(
+                    still_failed, all_success = dl_impl.retry_failed_chapters_via_browser(
                         json_path, retry_site, browser_path, headless=headless,
                         cookies_dir=cookies_dir,
                         progress_callback=self.update_progress,
@@ -1612,11 +1705,11 @@ class GenericComicDownloaderGUI:
                     first_timeout = int(self.first_timeout_var.get().strip())
                     retry_timeout = int(self.retry_timeout_var.get().strip())
 
-                    # 导入函数
-                    from downloader import download_from_failed_json
+                    # 按当前下载逻辑选择实现（旧版/新版）
+                    dl_impl = self._get_download_impl_module()
 
                     still_failed, all_success = asyncio.run(
-                        download_from_failed_json(
+                        dl_impl.download_from_failed_json(
                             json_path,
                             concurrent_limit=3,
                             download_thread_count=download_thread_count,
