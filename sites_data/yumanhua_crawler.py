@@ -16,26 +16,28 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属速度档（v1.4.9） =====
-# 默认 'std'：跟其他网站的正常节奏接近，但再放慢一点
-#   'std' ：默认。2 线程，每张 +1.0s，每 10 张歇 2~5s，章间 5~10s（约 0.9 张/秒）
-#   'slow'：最保守。1 线程，每张 +3.0s，每 8 张歇 6~14s，章间 15~35s
-#   't3'  ：3 线程，每张 +1.2s（约 0.9 张/秒）
-#   't4'  ：4 线程，每张 +1.0s（约 1.2 张/秒）
-#   't6'  ：6 线程，每张 +0.3s（实测约 3.3 张/秒）
-#   't8'  ：8 线程，每张 +0.2s（实测约 4.1 张/秒）
-# 需要更快时才改 t4/t6/t8；出现连续 403/429 就改回 'slow'。
-SPEED_MODE = 'std'
+# ===== 漫画客专属速度档（v1.5.0） =====
+# 默认 'p3'：3 个章节页并行采集 + 8 线程并行下载（多开网页、并行下载）
+#   'p3'  ：默认。章节并发 3、下载 8 线程、每张 +0.1s、每 30 张歇 2~4s、章间 3~6s
+#   'std' ：2 线程、每张 +1.0s、每 10 张歇 2~5s、章间 5~10s（常规站节奏再放慢）
+#   'slow'：1 线程、每张 +3.0s、每 8 张歇 6~14s、章间 15~35s（最保守）
+#   't3'  ：3 线程、每张 +1.2s；'t4'：4 线程、每张 +1.0s
+#   't6'  ：6 线程、每张 +0.3s；'t8'：8 线程、每张 +0.2s（仅单章并行）
+# 2026-11-14 实测：单章 8 线程无间隔 30/30、2.6~2.8 张/秒；
+# 3 章串行采集 289s，改 3 章并行后约 100s。
+# 并行会同时开多个章节页，风控压力更大；出现连续 403/429 或首页打不开，改回 'slow'。
+SPEED_MODE = 'p3'
 
 _SPEED_PROFILES = {
-    'std':  dict(threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
-    'slow': dict(threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
-    't3':   dict(threads=3, conc=3, delay=1.2, every=10, lo=4.0, hi=8.0, chlo=10.0, chhi=25.0),
-    't4':   dict(threads=4, conc=4, delay=1.0, every=12, lo=4.0, hi=10.0, chlo=10.0, chhi=25.0),
-    't6':   dict(threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
-    't8':   dict(threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
+    'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
+    'std':  dict(cc=1, threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
+    'slow': dict(cc=1, threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
+    't3':   dict(cc=1, threads=3, conc=3, delay=1.2, every=10, lo=4.0, hi=8.0, chlo=10.0, chhi=25.0),
+    't4':   dict(cc=1, threads=4, conc=4, delay=1.0, every=12, lo=4.0, hi=10.0, chlo=10.0, chhi=25.0),
+    't6':   dict(cc=1, threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
+    't8':   dict(cc=1, threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
 }
-_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['std'])
+_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['p3'])
 
 
 class YumanhuaCrawler:
@@ -81,8 +83,8 @@ class YumanhuaCrawler:
         # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
         # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）；
         # download_pause_every/extra_min/extra_max: 每下 N 张额外停一次（模拟看几页歇一会儿）
-        # 具体数值由顶部 SPEED_MODE 决定（slow / t3 / t4），改一行即可切换
-        'chapter_concurrency': 1,
+        # 具体数值由顶部 SPEED_MODE 决定，改一行即可切换
+        'chapter_concurrency': _PROFILE['cc'],
         'download_threads': _PROFILE['threads'],
         'download_concurrency': _PROFILE['conc'],
         'download_delay': _PROFILE['delay'],
