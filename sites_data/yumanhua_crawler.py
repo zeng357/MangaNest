@@ -16,17 +16,17 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客专属速度档（v1.5.3） =====
-# 默认 'default'：跟其他网站完全一样 —— 不额外限速、不加停顿，线程/并发沿用程序的全局设置
-#   'default'：同其他站点（本站只多一个“滚动到底触发懒加载”的翻页动作）
+# ===== 漫画客专属速度档（v1.5.4） =====
+# 默认 'multi'：3 个章节页并行采集 + 下载沿用全局线程（多线程，速度接近其他站）
+#   'multi'  ：默认。3 章并行翻页，滑到底立即关页再开下一张；不加额外延迟/停顿
+#   'default'：完全同其他站点，但一次只开 1 个章节页（最稳）
 #   't8'  ：单章节页 + 8 线程、每张 +0.2s、每 20 张歇 3~6s
 #   'std' ：2 线程、每张 +1.0s；'slow'：1 线程、每张 +3.0s（最保守）
-#   't3'/'t4'/'t6'：单章节页 3/4/6 线程
-#   'p3'  ：3 个章节页并行采集（实测在 GUI 有概率卡住，仅短范围试用）
-# 出现连续 403/429 或首页打不开，改 'slow'。
-SPEED_MODE = 'default'
+#   't3'/'t4'/'t6'：单章节页 3/4/6 线程；'p3'：3 章并行 + 8 线程 + 限速
+SPEED_MODE = 'multi'
 
 _SPEED_PROFILES = {
+    'multi':   dict(cc=3, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
     'default': dict(cc=1, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
     'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
     'std':  dict(cc=1, threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
@@ -36,7 +36,7 @@ _SPEED_PROFILES = {
     't6':   dict(cc=1, threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
     't8':   dict(cc=1, threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
 }
-_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['default'])
+_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['multi'])
 
 
 class YumanhuaCrawler:
