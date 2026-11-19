@@ -346,6 +346,14 @@ class GenericComicDownloaderGUI:
         self.human_site_list = []                         # 仅 selected 时生效的站点名单
         # 下载逻辑：global=新版（整批暂停，所有线程一起停）/ legacy=旧版（仅触发线程停）
         self.download_engine_var = tk.StringVar(value='global')
+        # 多线程高速下载（仅指定网站，绕过模拟人工限速）
+        self.fast_thread_var = tk.BooleanVar(value=False)
+        self.fast_site_list = []
+        self.fast_config = {}
+        # 漫画客节奏：False=跟随全局设置（默认），True=批次限速
+        self.yumanhua_batch_var = tk.BooleanVar(value=False)
+        # 采集模式：batch=先采集全部再下载（默认），stream=边采集边下载（爬一章下一章）
+        self.collect_mode_var = tk.StringVar(value='batch')
         self.image_name_padding_var = tk.StringVar(value=str(DEFAULT_IMAGE_NAME_PADDING))
         self.chapter_folder_naming_var = tk.StringVar(value=DEFAULT_CHAPTER_FOLDER_NAMING)
         self.window_size_var = tk.StringVar(value="medium")
@@ -369,7 +377,8 @@ class GenericComicDownloaderGUI:
                      self.browser_type_var, self.browser_mode_var, self.browser_path_var,
                      self.create_zip_var, self.image_name_padding_var,
                      self.chapter_folder_naming_var, self.human_mode_var,
-                     self.download_engine_var,
+                     self.download_engine_var, self.fast_thread_var, self.yumanhua_batch_var,
+                     self.collect_mode_var,
                      self.proxy_enabled_var, self.proxy_file_var, self.proxy_url_var,
                      self.proxy_source_var, self.proxy_browser_var,
                      self.proxy_allow_direct_var):
@@ -431,6 +440,7 @@ class GenericComicDownloaderGUI:
             # 切换站点时按当前范围重新折算模拟人工开关（指定网站模式只对名单内站点生效）
             if getattr(self, '_config_loaded', False):
                 self._apply_human_mode()
+                self._apply_fast_thread()
 
         self.site_var.trace("w", on_site_change)
         on_site_change()
@@ -677,6 +687,55 @@ class GenericComicDownloaderGUI:
         ttk.Label(logic_row, text="旧版=原始下载（无多轮重试/人工节奏/整批暂停）",
                   font=("微软雅黑", 9), foreground="gray").pack(side=tk.LEFT, padx=(8, 0))
 
+        # 多线程高速下载：只对指定网站生效，绕过模拟人工的线程/并发上限与停顿
+        fast_row = ttk.Frame(dl_frame)
+        fast_row.grid(row=3, column=0, columnspan=2, sticky='w', padx=4, pady=(6, 2))
+        ttk.Checkbutton(
+            fast_row, text="多线程高速下载（仅指定网站，不受模拟人工限速）",
+            variable=self.fast_thread_var, command=self.on_fast_thread_change
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            fast_row, text="选择网站…", width=10, command=self.on_choose_fast_sites
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        self.fast_scope_label = ttk.Label(
+            fast_row, text="当前：未指定网站（不启用）", font=("微软雅黑", 9), foreground="gray"
+        )
+        self.fast_scope_label.pack(side=tk.LEFT, padx=(8, 0))
+
+        # 漫画客节奏：本站此前写死的批次限速，改为设置页可切换
+        yh_row = ttk.Frame(dl_frame)
+        yh_row.grid(row=4, column=0, columnspan=2, sticky='w', padx=4, pady=(6, 2))
+        ttk.Label(yh_row, text="漫画客节奏:").pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            yh_row, text="跟随全局设置（默认）", variable=self.yumanhua_batch_var, value=False,
+            command=self.on_yumanhua_batch_change
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Radiobutton(
+            yh_row, text="批次限速（每 10 张停 2.5~5 分钟）", variable=self.yumanhua_batch_var, value=True,
+            command=self.on_yumanhua_batch_change
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(
+            yh_row, text="仅对漫画客生效：批次限速=防按批次风控；跟随全局=由上方模拟人工/高速下载开关决定",
+            font=("微软雅黑", 9), foreground="gray"
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # 采集模式：先采集全部章节图片链接再统一下载 / 采集完一章立即下载这一章
+        collect_row = ttk.Frame(dl_frame)
+        collect_row.grid(row=5, column=0, columnspan=2, sticky='w', padx=4, pady=(6, 2))
+        ttk.Label(collect_row, text="采集模式:").pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            collect_row, text="先采集全部再下载（默认）", variable=self.collect_mode_var, value='batch',
+            command=self.on_collect_mode_change
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Radiobutton(
+            collect_row, text="边采集边下载（爬一章下一章）", variable=self.collect_mode_var, value='stream',
+            command=self.on_collect_mode_change
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(
+            collect_row, text="边采集边下载：一章采集完立即下载这一章，适合章节多的漫画；两种模式可随时切回",
+            font=("微软雅黑", 9), foreground="gray"
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         # ---- 浏览器设置 ----
         browser_frame = ttk.LabelFrame(self.page_settings, text="浏览器设置", style="Card.TLabelframe")
         browser_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(6, 12))
@@ -781,6 +840,10 @@ class GenericComicDownloaderGUI:
                 'human_scope': self.human_scope_var.get(),
                 'human_sites': list(self.human_site_list or []),
                 'download_engine': self.download_engine_var.get(),
+                'fast_thread': bool(self.fast_thread_var.get()),
+                'fast_thread_sites': list(self.fast_site_list or []),
+                'yumanhua_batch_limit': bool(self.yumanhua_batch_var.get()),
+                'collect_mode': str(self.collect_mode_var.get() or 'batch'),
                 'image_name_padding': self.image_name_padding_var.get(),
                 'chapter_folder_naming': self.chapter_folder_naming_var.get(),
                 'window_size': self.window_size_var.get(),
@@ -810,6 +873,9 @@ class GenericComicDownloaderGUI:
         if not config:
             self._apply_human_mode()
             self._apply_download_engine()
+            self._apply_fast_thread()
+            self._apply_yumanhua_batch()
+            self._apply_collect_mode()
             self._config_loaded = True
             return
         mapping = {
@@ -845,6 +911,23 @@ class GenericComicDownloaderGUI:
         if isinstance(saved_sites, list):
             valid = set(getattr(self, 'available_sites', []) or [])
             self.human_site_list = [s for s in saved_sites if (not valid or s in valid)]
+        # 多线程高速下载：开关 + 仅指定网站名单
+        if 'fast_thread' in config:
+            self.fast_thread_var.set(bool(config.get('fast_thread')))
+        saved_fast = config.get('fast_thread_sites')
+        if isinstance(saved_fast, list):
+            valid = set(getattr(self, 'available_sites', []) or [])
+            self.fast_site_list = [s for s in saved_fast if (not valid or s in valid)]
+        self._apply_fast_thread()
+        # 漫画客节奏（默认跟随全局设置）
+        if 'yumanhua_batch_limit' in config:
+            self.yumanhua_batch_var.set(bool(config.get('yumanhua_batch_limit')))
+        self._apply_yumanhua_batch()
+        # 采集模式（默认先采集全部再下载）
+        if 'collect_mode' in config:
+            mode = str(config.get('collect_mode') or 'batch')
+            self.collect_mode_var.set('stream' if mode == 'stream' else 'batch')
+        self._apply_collect_mode()
         # 无论有没有存过，都把当前开关状态写进 config.HUMAN_MODE（缺省开启）
         self._apply_human_mode()
         self._apply_download_engine()
@@ -1125,6 +1208,167 @@ class GenericComicDownloaderGUI:
             self.append_status("已开启模拟人工下载：每张随机停顿、低并发、章节间随机停顿（默认）")
         else:
             self.append_status("已关闭模拟人工下载：按设置里的固定线程/并发/间隔下载（速度更快，被封风险更高）")
+
+    # ---------- 多线程高速下载（仅指定网站） ----------
+    def _apply_fast_thread(self):
+        """把『多线程高速下载』开关 + 指定网站名单折算成当前站点的生效值。
+
+        只在名单内的站点写入 config.FAST_THREAD=True；其它站点保持默认（含模拟人工限速）。
+        """
+        try:
+            import config as app_config
+            switch_on = bool(self.fast_thread_var.get())
+            sites = list(self.fast_site_list or [])
+            current_site = self.site_var.get() if hasattr(self, 'site_var') else ''
+            effective = bool(switch_on and sites and current_site in sites)
+            app_config.FAST_THREAD = effective
+            app_config.FAST_THREAD_SITES = sites
+            self._refresh_fast_scope_label()
+            return effective
+        except Exception as e:
+            print(f"应用多线程高速下载失败: {e}")
+            return None
+
+    def _refresh_fast_scope_label(self):
+        """刷新高速下载开关右侧的状态说明"""
+        if not getattr(self, 'fast_scope_label', None):
+            return
+        switch_on = bool(self.fast_thread_var.get())
+        if not switch_on:
+            text = "当前：已关闭"
+        elif not self.fast_site_list:
+            text = "当前：未指定网站（不启用）"
+        else:
+            names = self.fast_site_list
+            shown = '、'.join(names[:3]) + (f" 等 {len(names)} 个" if len(names) > 3 else '')
+            current_site = self.site_var.get() if hasattr(self, 'site_var') else ''
+            state = '已启用' if current_site in names else '未启用'
+            text = f"范围：仅 {shown}；当前站点{state}"
+        try:
+            self.fast_scope_label.config(text=text)
+        except Exception:
+            pass
+
+    def on_fast_thread_change(self):
+        """高速下载开关切换：立即折算生效并提示"""
+        enabled = self._apply_fast_thread()
+        if enabled is None:
+            return
+        if not self.fast_thread_var.get():
+            self.append_status("已关闭多线程高速下载：所有站点恢复默认（含模拟人工限速）")
+        elif not self.fast_site_list:
+            self.append_status("已开启多线程高速下载，但还没选网站：请点『选择网站…』指定生效站点")
+        elif enabled:
+            import config as app_config
+            self.append_status(f"多线程高速下载已对当前站点生效：并发 {getattr(app_config, 'FAST_THREAD_CONCURRENCY', 8)}、"
+                               f"线程 {getattr(app_config, 'FAST_THREAD_WORKERS', 8)}，跳过人工停顿")
+        else:
+            self.append_status("多线程高速下载已开启：当前站点不在名单内，仍按默认速度")
+
+    def _apply_yumanhua_batch(self):
+        """把『漫画客节奏』写进 config.YUMANHUA_BATCH_LIMIT（立即生效，并同步已创建的爬虫）。"""
+        try:
+            import config as app_config
+            batch = bool(self.yumanhua_batch_var.get())
+            app_config.YUMANHUA_BATCH_LIMIT = batch
+            # 已有爬虫实例则立即重算本站限速参数
+            crawler = getattr(self, 'crawler', None)
+            site_crawler = getattr(crawler, 'site_crawler', None) if crawler else None
+            if site_crawler is not None and hasattr(site_crawler, '_apply_batch_limit'):
+                site_crawler._apply_batch_limit()
+            return batch
+        except Exception as e:
+            print(f"应用漫画客节奏失败: {e}")
+            return None
+
+    def on_yumanhua_batch_change(self):
+        """漫画客节奏切换：立即生效并提示"""
+        batch = self._apply_yumanhua_batch()
+        if batch is None:
+            return
+        if batch:
+            self.append_status("漫画客节奏：批次限速（每 10 张整批停 2.5~5 分钟，章间 5~10 分钟，单章 2 线程/2 并发）")
+        else:
+            self.append_status("漫画客节奏：跟随全局设置（由模拟人工 / 多线程高速下载开关决定）")
+
+    def _apply_collect_mode(self):
+        """把『采集模式』写进 config.COLLECT_MODE（下载前生效）。"""
+        try:
+            import config as app_config
+            mode = 'stream' if str(self.collect_mode_var.get()).lower() == 'stream' else 'batch'
+            app_config.COLLECT_MODE = mode
+            return mode
+        except Exception as e:
+            print(f"应用采集模式失败: {e}")
+            return None
+
+    def on_collect_mode_change(self):
+        """采集模式切换：立即生效并提示"""
+        mode = self._apply_collect_mode()
+        if mode is None:
+            return
+        if mode == 'stream':
+            self.append_status("采集模式：边采集边下载（采集完一章立即下载这一章，再继续下一章）")
+        else:
+            self.append_status("采集模式：先采集全部章节图片链接，再统一下载（原逻辑）")
+
+    def on_choose_fast_sites(self):
+        """弹出『高速下载网站』多选框（只对勾选的站点生效）"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("多线程高速下载网站")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+
+        ttk.Label(dialog, text="勾选要启用『多线程高速下载』的网站（可多选）：",
+                  font=("微软雅黑", 10, "bold")).pack(anchor='w', padx=14, pady=(12, 6))
+        ttk.Label(dialog, text="这些站点会跳过模拟人工的线程/并发上限与停顿，下载更快；其它站点不受影响。",
+                  font=("微软雅黑", 9), foreground="gray").pack(anchor='w', padx=14, pady=(0, 8))
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(2, 6))
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        site_box = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, width=34, height=12,
+                              yscrollcommand=scrollbar.set, exportselection=False)
+        scrollbar.config(command=site_box.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        site_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        names = list(getattr(self, 'available_sites', []) or [])
+        for n in names:
+            site_box.insert(tk.END, n)
+        for i, n in enumerate(names):
+            if n in (self.fast_site_list or []):
+                site_box.selection_set(i)
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill=tk.X, padx=16, pady=(0, 4))
+        ttk.Button(btn_row, text="全选", width=8,
+                   command=lambda: site_box.selection_set(0, tk.END)).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="全不选", width=8,
+                   command=lambda: site_box.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=(6, 0))
+
+        def _confirm():
+            picked = [site_box.get(i) for i in site_box.curselection()]
+            self.fast_site_list = picked
+            self._apply_fast_thread()
+            if getattr(self, '_config_loaded', False):
+                self.save_config()
+            if picked:
+                self.append_status(f"高速下载站点：{len(picked)} 个（{'、'.join(picked[:3])}"
+                                   + ("…" if len(picked) > 3 else "") + "）")
+            else:
+                self.append_status("高速下载站点：未指定（不启用）")
+            dialog.destroy()
+
+        action_row = ttk.Frame(dialog)
+        action_row.pack(fill=tk.X, padx=16, pady=(4, 12))
+        ttk.Button(action_row, text="确定", width=10, command=_confirm).pack(side=tk.RIGHT)
+        ttk.Button(action_row, text="取消", width=10, command=dialog.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        dialog.wait_window()
 
     def on_choose_human_sites(self):
         """弹出『模拟人工下载范围』选择框：全部网站 / 仅指定网站（可多选）。"""
@@ -1616,6 +1860,9 @@ class GenericComicDownloaderGUI:
             
             self.save_config()
             self._apply_human_mode()
+            self._apply_fast_thread()
+            self._apply_yumanhua_batch()
+            self._apply_collect_mode()
             self._apply_download_logic()
             self.confirm_button.config(state=tk.DISABLED)
             self.append_status(f"使用站点: {site_name}")
@@ -1820,8 +2067,59 @@ class GenericComicDownloaderGUI:
         retry_thread.daemon = True
         retry_thread.start()
 
+    def _sync_site_lists_after_change(self, prev_names):
+        """站点增删后同步『设置』里的名单型选项。
+
+        - 新增站点：自动加入已在实际生效的名单
+          模拟人工范围=仅指定网站且名单非空 -> 加入 human_sites
+          多线程高速下载已开启且名单非空     -> 加入 fast_thread_sites
+        - 删除站点：从上述名单中移除，避免留下失效名字
+        """
+        try:
+            names_now = set(self.available_sites or [])
+            prev = set(prev_names or [])
+            added = [n for n in (self.available_sites or []) if n not in prev]
+            removed = [n for n in prev if n not in names_now]
+            changed = False
+
+            hs = list(self.human_site_list or [])
+            fs = list(self.fast_site_list or [])
+            if removed:
+                new_hs = [n for n in hs if n not in removed]
+                new_fs = [n for n in fs if n not in removed]
+                if new_hs != hs or new_fs != fs:
+                    hs, fs = new_hs, new_fs
+                    changed = True
+            if added:
+                if self.human_scope_var.get() == 'selected' and hs:
+                    for n in added:
+                        if n not in hs:
+                            hs.append(n)
+                            changed = True
+                if self.fast_thread_var.get() and fs:
+                    for n in added:
+                        if n not in fs:
+                            fs.append(n)
+                            changed = True
+
+            if changed:
+                self.human_site_list, self.fast_site_list = hs, fs
+                self._apply_human_mode()
+                self._apply_fast_thread()
+                if getattr(self, '_config_loaded', False):
+                    self.save_config()
+                if added:
+                    self.append_status(f"新站点已同步到设置页：{'、'.join(added)}")
+                if removed:
+                    self.append_status(f"已移除站点也从设置名单清理：{'、'.join(removed)}")
+            return added
+        except Exception as e:
+            print(f"同步新站点设置失败: {e}")
+            return []
+
     def refresh_site_list(self):
         """刷新站点列表"""
+        prev_names = list(getattr(self, 'available_sites', []) or [])
         _refresh_sites_cache()
         self.available_sites = get_all_site_names()
         self.sites_requiring_login = get_sites_requiring_login()
@@ -1840,6 +2138,7 @@ class GenericComicDownloaderGUI:
         # 更新站点计数
         self.site_count_label.config(text=f"已加载 {len(self.available_sites)} 个站点")
         self.append_status(f"站点列表已刷新，共 {len(self.available_sites)} 个站点")
+        self._sync_site_lists_after_change(prev_names)
 
     def add_site_file(self):
         """添加站点文件"""
@@ -1867,6 +2166,7 @@ class GenericComicDownloaderGUI:
 
         if added:
             self.append_status(f"已添加站点: {', '.join(added)}")
+            prev_names = list(self.available_sites or [])
             self.available_sites = get_all_site_names()
             self.sites_requiring_login = get_sites_requiring_login()
             self.sites_supporting_cookie = get_sites_supporting_cookie()
@@ -1874,6 +2174,7 @@ class GenericComicDownloaderGUI:
             self.site_combo['values'] = self.available_sites
             self.site_count_label.config(text=f"已加载 {len(self.available_sites)} 个站点")
             self.site_var.set(added[0])
+            self._sync_site_lists_after_change(prev_names)
         if skipped:
             for file, reason in skipped:
                 self.append_status(f"跳过重复: {file} - {reason}")
@@ -1894,6 +2195,7 @@ class GenericComicDownloaderGUI:
             if added:
                 names = [n for _, n in added]
                 self.append_status(f"已添加 {len(added)} 个站点: {', '.join(names)}")
+                prev_names = list(self.available_sites or [])
                 self.available_sites = get_all_site_names()
                 self.sites_requiring_login = get_sites_requiring_login()
                 self.sites_supporting_cookie = get_sites_supporting_cookie()
@@ -1901,6 +2203,7 @@ class GenericComicDownloaderGUI:
                 self.site_combo['values'] = self.available_sites
                 self.site_count_label.config(text=f"已加载 {len(self.available_sites)} 个站点")
                 self.site_var.set(names[0])
+                self._sync_site_lists_after_change(prev_names)
             if skipped:
                 for file, reason in skipped:
                     self.append_status(f"跳过重复: {file} - {reason}")
@@ -1931,6 +2234,7 @@ class GenericComicDownloaderGUI:
             else:
                 _remove_site(site_name)
                 self.append_status(f"已删除站点: {site_name}")
+            prev_names = list(self.available_sites or [])
             self.available_sites = get_all_site_names()
             self.sites_requiring_login = get_sites_requiring_login()
             self.sites_supporting_cookie = get_sites_supporting_cookie()
@@ -1941,6 +2245,7 @@ class GenericComicDownloaderGUI:
                 self.site_var.set(self.available_sites[0])
             else:
                 self.site_var.set('')
+            self._sync_site_lists_after_change(prev_names)
         except Exception as e:
             self.append_status(f"删除站点失败: {e}")
             messagebox.showerror("错误", str(e))

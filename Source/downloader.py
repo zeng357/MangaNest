@@ -15,10 +15,24 @@ import random
 
 
 # ==================== 模拟人工（全站默认） ====================
-def human_mode_enabled():
-    """读取 config.HUMAN_MODE（缺省开启：宁可慢一点，也别触发站点封禁）。"""
+def fast_thread_enabled():
+    """多线程高速下载（仅指定网站）：绕过人工节奏的线程/并发/停顿限制。"""
     try:
         import config
+        return bool(getattr(config, 'FAST_THREAD', False))
+    except Exception:
+        return False
+
+
+def human_mode_enabled():
+    """读取 config.HUMAN_MODE（缺省开启：宁可慢一点，也别触发站点封禁）。
+
+    命中「多线程高速下载」的站点一律按固定参数跑：人工等待/停顿/并发上限全部不生效。
+    """
+    try:
+        import config
+        if fast_thread_enabled():
+            return False
         return bool(getattr(config, 'HUMAN_MODE', True))
     except Exception:
         return True
@@ -45,10 +59,12 @@ def human_pause():
 
     站点 CONFIG 可用 chapter_pause_min / chapter_pause_max 覆盖默认停顿，
     用于「该站被限流后单独降速」（例如漫画客）。
+    站点显式声明了章间停顿时，即使关闭模拟人工也照常执行（批次限速需要）。
     """
-    if not human_mode_enabled():
-        return
     lo, hi = get_active_chapter_pause()
+    site_forced = lo is not None and hi is not None
+    if not site_forced and not human_mode_enabled():
+        return
     if lo is None or hi is None:
         try:
             import config
@@ -1748,7 +1764,19 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     site_delay = site_cfg.get('download_delay', 0)
     site_conc = site_cfg.get('download_concurrency', 0)
     site_threads = site_cfg.get('download_threads', 0)
-    if human_mode_enabled():
+    fast = fast_thread_enabled()
+    if fast:
+        # 多线程高速下载：按 config 的固定值直接跑，不套人工上限、不加站点停顿
+        try:
+            import config as _cfg
+            fast_conc = max(1, int(getattr(_cfg, 'FAST_THREAD_CONCURRENCY', 8) or 8))
+            fast_threads = max(1, int(getattr(_cfg, 'FAST_THREAD_WORKERS', 8) or 8))
+        except Exception:
+            fast_conc, fast_threads = 8, 8
+        site_delay = 0
+        site_conc, site_threads = fast_conc, fast_threads
+        concurrent_limit, download_thread_count = fast_conc, fast_threads
+    elif human_mode_enabled():
         # 模拟人工：全站统一收紧并发/线程，并保证每张图至少有一点随机间隔
         site_conc, site_threads = human_limits(site_conc or concurrent_limit, site_threads or download_thread_count)
         concurrent_limit, download_thread_count = site_conc, site_threads
@@ -1759,7 +1787,7 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     # 站点级阅读停顿：每下 N 张额外歇一会儿（漫画客这类站用来模拟真人看几页歇一下）
     reset_active_image_breaks()
     site_pause_every = site_cfg.get('download_pause_every') or 0
-    if site_pause_every:
+    if site_pause_every and not fast:
         extra_lo = site_cfg.get('download_pause_extra_min') or 0
         extra_hi = site_cfg.get('download_pause_extra_max') or extra_lo
         set_active_image_breaks(site_pause_every, extra_lo, extra_hi)
@@ -1768,7 +1796,7 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     site_pause_min = site_cfg.get('chapter_pause_min')
     site_pause_max = site_cfg.get('chapter_pause_max')
     reset_active_chapter_pause()
-    if human_mode_enabled() and (site_pause_min or site_pause_max):
+    if (site_pause_min or site_pause_max) and not fast:
         set_active_chapter_pause(site_pause_min, site_pause_max)
         lo, hi = get_active_chapter_pause()
         if lo is None:
@@ -1777,6 +1805,8 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     if human_mode_enabled():
         print(f"模拟人工模式：单章并发 {site_conc}，线程 {site_threads}，每张图随机间隔 "
               f"{site_delay + 0.3:.1f}~{site_delay + 0.9:.1f}s，章节间随机停顿")
+    elif fast:
+        print(f"多线程高速下载：单章并发 {site_conc}，线程 {site_threads}，跳过人工节奏与站点停顿")
     elif site_delay or site_conc or site_threads:
         print(f"站点限速已启用：图片间隔 +{site_delay}s，单章并发上限 {site_conc or '不限'}，"
               f"下载线程上限 {site_threads or '不限'}")

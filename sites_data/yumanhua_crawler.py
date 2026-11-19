@@ -16,25 +16,16 @@ _CHAPTER_TEXT_RE = re.compile(r'^(?:第\s*\d+\s*[话章]|(?:总\s*)?\d)')
 # 章节号提取（用于 num 与站点一致，标题里去掉「第N话」前缀避免 GUI 重复编号）
 _CHAPTER_NO_RE = re.compile(r'^第\s*(\d+)\s*[话章]\s*')
 
-# ===== 漫画客速度档（v1.5.7） =====
-# 默认 'batch10'：本站被按“批次计数”风控（连续下 50 张左右就被限），
-# 所以改成「每下 10 张 → 整批暂停 2.5~5 分钟 → 再继续」，章节之间再停 5~10 分钟。
-# 其它档：'default' 程序默认（不限速）、'multi' 多章并行、'slow' 最保守。
-SPEED_MODE = 'batch10'
-
-_SPEED_PROFILES = {
-    'batch10': dict(cc=1, threads=2, conc=2, delay=0.0, every=10, lo=150.0, hi=300.0, chlo=300.0, chhi=600.0),
-    'default': dict(cc=0, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
-    'multi':   dict(cc=3, threads=0, conc=0, delay=0.0, every=0, lo=0.0, hi=0.0, chlo=0.0, chhi=0.0),
-    'p3':   dict(cc=3, threads=8, conc=8, delay=0.1, every=30, lo=2.0, hi=4.0, chlo=3.0, chhi=6.0),
-    'std':  dict(cc=1, threads=2, conc=2, delay=1.0, every=10, lo=2.0, hi=5.0, chlo=5.0, chhi=10.0),
-    'slow': dict(cc=1, threads=1, conc=1, delay=3.0, every=8, lo=6.0, hi=14.0, chlo=15.0, chhi=35.0),
-    't3':   dict(cc=1, threads=3, conc=3, delay=1.2, every=10, lo=4.0, hi=8.0, chlo=10.0, chhi=25.0),
-    't4':   dict(cc=1, threads=4, conc=4, delay=1.0, every=12, lo=4.0, hi=10.0, chlo=10.0, chhi=25.0),
-    't6':   dict(cc=1, threads=6, conc=6, delay=0.3, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
-    't8':   dict(cc=1, threads=8, conc=8, delay=0.2, every=20, lo=3.0, hi=6.0, chlo=5.0, chhi=12.0),
-}
-_PROFILE = _SPEED_PROFILES.get(SPEED_MODE, _SPEED_PROFILES['multi'])
+# ===== 漫画客节奏（由设置页『漫画客节奏』控制，v1.6.8） =====
+# 默认关闭批次限速 = 与其他站点一致，完全跟随全局设置（模拟人工开关 / 多线程高速下载开关）。
+# 开启后使用下面的批次档：每下 10 张整批停 2.5~5 分钟，章节之间停 5~10 分钟，单章 2 线程/2 并发。
+# 开关值来自 config.YUMANHUA_BATCH_LIMIT（由 GUI 写入，存 config.json）。
+_BATCH_PROFILE = dict(cc=1, threads=2, conc=2, delay=0.0, every=10, lo=150.0, hi=300.0, chlo=300.0, chhi=600.0)
+_LIMIT_KEYS = (
+    'download_threads', 'download_concurrency', 'download_delay',
+    'download_pause_every', 'download_pause_extra_min', 'download_pause_extra_max',
+    'chapter_pause_min', 'chapter_pause_max',
+)
 
 
 class YumanhuaCrawler:
@@ -75,25 +66,42 @@ class YumanhuaCrawler:
         'chapter_group_size': None,
         # 图片在 ecombdimg.com / shimolife.com 等 CDN，与站点不同域，带 Referer 防防盗链
         'image_referer': 'http://yumanhua.com/',
-        # 站点限速（2026-11-13）→ 慢速专用档（2026-11-14 再次被限流后调低）
-        # chapter_concurrency: 同时处理的章节数；download_threads: 单章下载线程数上限；
-        # download_concurrency: 单章图片协程并发上限；download_delay: 每张图下载后的额外等待秒数；
-        # chapter_pause_min/max: 章节之间的停顿秒数（下载器读取，仅模拟人工模式生效）；
-        # download_pause_every/extra_min/extra_max: 每下 N 张额外停一次（模拟看几页歇一会儿）
-        # 具体数值由顶部 SPEED_MODE 决定；'default' 时下面的限速键一律不加，行为同其他站点
-        'chapter_concurrency': _PROFILE['cc'],
+        # 站点限速：默认不加（与其他站点一致）；
+        # 设置页勾选『漫画客批次限速』后，才由 _apply_batch_limit() 写入慢速档参数
+        'chapter_concurrency': 0,
     }
-    if SPEED_MODE != 'default':
-        CONFIG.update({
-            'download_threads': _PROFILE['threads'],
-            'download_concurrency': _PROFILE['conc'],
-            'download_delay': _PROFILE['delay'],
-            'download_pause_every': _PROFILE['every'],
-            'download_pause_extra_min': _PROFILE['lo'],
-            'download_pause_extra_max': _PROFILE['hi'],
-            'chapter_pause_min': _PROFILE['chlo'],
-            'chapter_pause_max': _PROFILE['chhi'],
-        })
+
+    def _apply_batch_limit(self):
+        """按设置页的『漫画客节奏』开关，写入/移除本站限速参数。
+
+        关闭（默认）：不覆盖任何下载参数，完全跟随全局（模拟人工 / 高速下载开关）。
+        开启：每 10 张整批停 2.5~5 分钟、章间停 5~10 分钟、单章 2 线程/2 并发、章节串行。
+        """
+        try:
+            import config
+            batch = bool(getattr(config, 'YUMANHUA_BATCH_LIMIT', False))
+        except Exception:
+            batch = False
+        cfg = self.CONFIG
+        if batch:
+            cfg.update({
+                'chapter_concurrency': _BATCH_PROFILE['cc'],
+                'download_threads': _BATCH_PROFILE['threads'],
+                'download_concurrency': _BATCH_PROFILE['conc'],
+                'download_delay': _BATCH_PROFILE['delay'],
+                'download_pause_every': _BATCH_PROFILE['every'],
+                'download_pause_extra_min': _BATCH_PROFILE['lo'],
+                'download_pause_extra_max': _BATCH_PROFILE['hi'],
+                'chapter_pause_min': _BATCH_PROFILE['chlo'],
+                'chapter_pause_max': _BATCH_PROFILE['chhi'],
+            })
+            print("漫画客节奏：批次限速（每 10 张整批停 2.5~5 分钟，章间 5~10 分钟）")
+        else:
+            for key in _LIMIT_KEYS:
+                cfg.pop(key, None)
+            cfg['chapter_concurrency'] = 0
+            print("漫画客节奏：跟随全局设置（模拟人工/高速下载开关）")
+        return batch
 
     def __init__(self, crawler):
         self.crawler = crawler
@@ -103,6 +111,8 @@ class YumanhuaCrawler:
         self._chapters_cache = {}
         # 搜索阶段捕获到的封面 URL（search 结果自带 imgurl，直接复用）
         self._cover_url = None
+        # 按设置页开关决定本站节奏（批次限速 / 跟随全局）
+        self._apply_batch_limit()
 
     # ---------- 搜索（本站为 AJAX POST /s，非可导航 URL） ----------
     def _js_fetch_to_window(self, tab, path, body, var):
@@ -286,13 +296,17 @@ class YumanhuaCrawler:
 
     # ---------- 章节图片（下拉式，需滚动触发懒加载） ----------
     def _human_scroll(self, chapter_tab):
-        """本网站专用：模拟真人一屏一屏地翻页看长条漫。
+        """本站专用：滚动触发懒加载。
 
-        整页一次性滑到底是非常典型的脚本特征，风控最容易抓这个。
-        这里按视口高度分步滚动：步长随机、每屏随机停顿、每翻几屏多停一会儿、
-        中途偶尔往回翻一点（真人看画面时的习惯动作），到底后再停一下。
-        滚动事件本身就是真实浏览器产生的，不是伪造的。
+        - 跟随全局设置且模拟人工关闭 / 命中多线程高速下载：直接分段快速到底（只为触发懒加载）
+        - 模拟人工开启：一屏一屏慢滚，但把停顿压到 0.1~0.25s，减少空等
         """
+        try:
+            import config as _cfg
+            fast = bool(getattr(_cfg, 'FAST_THREAD', False)) or \
+                   (not bool(getattr(_cfg, 'HUMAN_MODE', True)))
+        except Exception:
+            fast = False
         try:
             vh = int(chapter_tab.run_js('return window.innerHeight') or 900)
         except Exception:
@@ -304,56 +318,78 @@ class YumanhuaCrawler:
         except Exception:
             total = 0
 
+        start_time = time.time()
         pos = 0
         screens = 0
-        max_screens = 260          # 安全上限，防止页面高度异常时死循环
         no_grow = 0
-        while pos < total and screens < max_screens:
-            # 每屏滚动 1.1~1.5 倍视口高度（仍然分段滚动，不会一步跨过整张图）
-            pos = min(pos + int(vh * random.uniform(1.1, 1.5)), total)
-            try:
-                chapter_tab.run_js(f'window.scrollTo(0, {pos})')
-            except Exception as e:
-                print(f"滚动失败: {e}")
-                break
-            # 每屏停留时间：缩短到 0.18~0.45s，翻页更快但仍保留停顿
-            time.sleep(random.uniform(0.18, 0.45))
-            screens += 1
 
-            # 每 18~26 屏回翻一点，模拟来回浏览
-            if screens % random.randint(18, 26) == 0 and pos > vh:
-                back = max(0, pos - int(vh * random.uniform(0.2, 0.4)))
+        if fast:
+            # 快速档：3 屏一步滑到底，只要懒加载被触发
+            max_screens = 30
+            while pos < total and screens < max_screens:
+                pos = min(pos + int(vh * 3), total)
                 try:
-                    chapter_tab.run_js(f'window.scrollTo(0, {back})')
-                    time.sleep(random.uniform(0.3, 0.7))
+                    chapter_tab.run_js(f'window.scrollTo(0, {pos})')
                 except Exception:
-                    pass
-                pos = back
+                    break
+                time.sleep(0.05)
+                screens += 1
+                try:
+                    h = int(chapter_tab.run_js('return document.body.scrollHeight') or total)
+                except Exception:
+                    h = total
+                if h > total:
+                    total = h
+                if screens >= 3 and pos >= total:
+                    break
+            print(f"快速翻页完成：{screens} 屏，耗时 {time.time() - start_time:.1f}s")
+        else:
+            max_screens = 260
+            while pos < total and screens < max_screens:
+                # 每屏滚动 1.2~1.8 倍视口高度
+                pos = min(pos + int(vh * random.uniform(1.2, 1.8)), total)
+                try:
+                    chapter_tab.run_js(f'window.scrollTo(0, {pos})')
+                except Exception as e:
+                    print(f"滚动失败: {e}")
+                    break
+                time.sleep(random.uniform(0.1, 0.25))
+                screens += 1
 
-            # 每 20~30 屏多停一次（看图/发呆/等懒加载）
-            if screens % random.randint(20, 30) == 0:
-                time.sleep(random.uniform(1.5, 3.0))
+                # 每 30~45 屏回翻一点，模拟来回浏览
+                if screens % random.randint(30, 45) == 0 and pos > vh:
+                    back = max(0, pos - int(vh * random.uniform(0.2, 0.4)))
+                    try:
+                        chapter_tab.run_js(f'window.scrollTo(0, {back})')
+                        time.sleep(random.uniform(0.2, 0.4))
+                    except Exception:
+                        pass
+                    pos = back
 
-            # 页面可能继续变长（懒加载），同步一次
-            try:
-                h = int(chapter_tab.run_js('return document.body.scrollHeight') or total)
-            except Exception:
-                h = total
-            if h <= total:
-                no_grow += 1
-            else:
-                total = h
-                no_grow = 0
-            if no_grow >= 2 and pos >= total:
-                break
+                # 每 30~45 屏多停一次（等懒加载）
+                if screens % random.randint(30, 45) == 0:
+                    time.sleep(random.uniform(1.0, 2.0))
+
+                # 页面可能继续变长（懒加载），同步一次
+                try:
+                    h = int(chapter_tab.run_js('return document.body.scrollHeight') or total)
+                except Exception:
+                    h = total
+                if h <= total:
+                    no_grow += 1
+                else:
+                    total = h
+                    no_grow = 0
+                if no_grow >= 2 and pos >= total:
+                    break
+            print(f"模拟真人翻页完成：{screens} 屏，耗时 {time.time() - start_time:.1f}s")
 
         # 到底就立即结束：不再额外停等，采集完马上关标签
         try:
             chapter_tab.run_js('window.scrollTo(0, document.body.scrollHeight)')
         except Exception:
             pass
-        time.sleep(0.2)
-        print(f"模拟真人翻页完成：{screens} 屏")
+        time.sleep(0.1)
 
     def get_chapter_image_urls(self, chapter_tab):
         """像真人翻页一样滚动，把懒加载图片 data-src 刷出来，再收集真实漫画页 URL。
@@ -409,7 +445,7 @@ class YumanhuaCrawler:
         try:
             if chapter_tab is None:
                 chapter_tab = main_tab.new_tab(chapter_url)
-                time.sleep(2)
+                time.sleep(1.0)
 
             retry_count = 0
             max_retries = 3
@@ -424,7 +460,7 @@ class YumanhuaCrawler:
                     retry_count += 1
                     print(f"章节{chapter_num} 未检测到图片，第{retry_count}次重新加载...")
                     chapter_tab.get(chapter_url)
-                    time.sleep(2)
+                    time.sleep(1.0)
                 else:
                     print(f"章节{chapter_num} 已达最大重试次数({max_retries})")
                     return {
@@ -454,8 +490,17 @@ class YumanhuaCrawler:
 
     def collect_chapters_images(self, target_comic_tab, chapter_start=1, chapter_end=0,
                                 max_threads=3, progress_callback=None):
-        # 站点限速：同时处理的章节数不超过 CONFIG.chapter_concurrency（默认 2）
-        cap = int((self.CONFIG or {}).get('chapter_concurrency') or 0)
+        # 设置页可能刚改过节奏，这里再同步一次
+        self._apply_batch_limit()
+        # 站点限速：仅批次限速模式下把同时处理的章节数压到 CONFIG.chapter_concurrency；
+        # 跟随全局模式下不限（交给全局『模拟人工/高速下载』开关与 GUI 的标签页数）
+        try:
+            import config as _cfg
+            follow_global = (not bool(getattr(_cfg, 'YUMANHUA_BATCH_LIMIT', False))) or \
+                            (not bool(getattr(_cfg, 'HUMAN_MODE', True)))
+        except Exception:
+            follow_global = True
+        cap = 0 if follow_global else int((self.CONFIG or {}).get('chapter_concurrency') or 0)
         if cap and max_threads > cap:
             print(f"章节并发按站点限速下调: {max_threads} -> {cap}")
             max_threads = cap
@@ -505,7 +550,23 @@ class YumanhuaCrawler:
                         print(f"章节{info['chapter_num']} 预开标签失败，改为串行处理: {e}")
                         info['tab'] = None
                 if open_tabs:
-                    time.sleep(2.0)   # 等所有章节页一起加载
+                    # 等页面出图（最多 1.2s）：出图就立刻开跑，不再固定死等 2 秒
+                    deadline = time.time() + 1.2
+                    while time.time() < deadline:
+                        ready = True
+                        for _t in open_tabs:
+                            try:
+                                n = int(_t.run_js(
+                                    "return document.querySelectorAll('.chapter-img-box img, img').length"
+                                ) or 0)
+                            except Exception:
+                                n = 0
+                            if n <= 0:
+                                ready = False
+                                break
+                        if ready:
+                            break
+                        time.sleep(0.15)
 
             threads, results = [], []
             barrier = threading.Barrier(len(batch)) if open_tabs and len(batch) == len(open_tabs) else None
@@ -540,29 +601,36 @@ class YumanhuaCrawler:
                     if info.get('done') or over_time:
                         if over_time and not info.get('done'):
                             print(f"章节{info['chapter_num']} 超过300秒未完成，强制关闭标签页")
+                        # 主线程按 id 批量关（比单页 close 快，且不会卡在页面 unload）
                         try:
-                            tab.close()
+                            tid = tab.tab_id
+                            self.crawler.page.close_tabs([tid])
                         except Exception:
-                            pass
+                            try:
+                                tab.close()
+                            except Exception:
+                                pass
                         info['closed'] = True
                         if info.get('done'):
                             print(f"章节{info['chapter_num']} 采集完成，已关闭标签页")
-                time.sleep(0.3)
+                time.sleep(0.2)
 
-            # 兜底：还有没关掉的一并关（按 id 批量关，避免个别页关不掉）
-            ids = []
-            for t in open_tabs:
+            # 兜底：只收尾还没关掉的标签页（已关的不再重复 close，二次 close 会白等）
+            left_ids = []
+            for info in batch:
+                if info.get('closed'):
+                    continue
+                tab = info.get('tab')
+                if tab is None:
+                    continue
                 try:
-                    ids.append(t.tab_id)
+                    left_ids.append(tab.tab_id)
                 except Exception:
                     pass
+                info['closed'] = True
+            if left_ids:
                 try:
-                    t.close()
-                except Exception:
-                    pass
-            if ids:
-                try:
-                    self.crawler.page.close_tabs(ids)
+                    self.crawler.page.close_tabs(left_ids)
                 except Exception:
                     pass
 

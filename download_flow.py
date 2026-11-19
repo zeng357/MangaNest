@@ -2,11 +2,50 @@
 import asyncio
 import time
 
-from downloader import (download_cover_image, download_all_chapters,
-                        download_cover_via_browser, is_browser_render_site,
-                        set_active_referer, set_active_decryptor, _build_decryptor,
-                        set_active_name_padding, set_active_chapter_folder_naming)
+import downloader as _dl_new
 from utils import zip_main_folder
+
+
+def get_download_impl():
+    """按设置返回下载实现模块。
+
+    'new'    -> downloader.py（v1.4.0 及以后的重试/并发/人工节奏/整批暂停）
+    'legacy' -> downloader_legacy.py（v1.4.0 之前那一套原始下载逻辑）
+    """
+    try:
+        import config
+        if str(getattr(config, 'DOWNLOAD_LOGIC', 'new') or 'new').lower() == 'legacy':
+            import downloader_legacy as _legacy
+            return _legacy
+    except Exception as e:
+        print(f"加载旧版下载逻辑失败，回退新版: {e}")
+    return _dl_new
+
+
+def _apply_name_padding(value):
+    """命名补零对两套下载器各自生效（旧版有自己的全局变量）"""
+    try:
+        _dl_new.set_active_name_padding(value)
+    except Exception:
+        pass
+    try:
+        import downloader_legacy as _legacy
+        _legacy.set_active_name_padding(value)
+    except Exception:
+        pass
+
+
+def _apply_chapter_folder_naming(value):
+    try:
+        _dl_new.set_active_chapter_folder_naming(value)
+    except Exception:
+        pass
+    try:
+        import downloader_legacy as _legacy
+        _legacy.set_active_chapter_folder_naming(value)
+    except Exception:
+        pass
+
 
 
 def search_and_open(crawler, comic_name, comic_id=None, log=print):
@@ -29,12 +68,136 @@ def search_and_open(crawler, comic_name, comic_id=None, log=print):
     return target_comic_tab, comic_name
 
 
+def _stream_collect_mode():
+    """采集模式：'stream'=边采集边下载（爬一章下一章），'batch'=先全部采集再下载。"""
+    try:
+        import config
+        return str(getattr(config, 'COLLECT_MODE', 'batch') or 'batch').lower() == 'stream'
+    except Exception:
+        return False
+
+
+async def _download_cover_async(impl, crawler, target_comic_tab, comic_name, download_path, log):
+    """下载封面（加密站点走浏览器渲染，其余走 HTTP，带 Referer/解密）。"""
+    log("正在获取封面图片...")
+    cover_url = crawler.get_cover_image(target_comic_tab)
+    if not cover_url:
+        return
+    # 加密站点优先使用浏览器渲染提取封面，失败回退HTTP下载
+    # （站点CONFIG声明cover_via_browser=False时封面为明文，直接HTTP下载）
+    cover_done = False
+    cover_cfg = getattr(crawler.site_crawler, 'CONFIG', {})
+    if _dl_new.is_browser_render_site(crawler.site_crawler) and cover_cfg.get('cover_via_browser', True):
+        cover_done = impl.download_cover_via_browser(
+            target_comic_tab, crawler.site_crawler, comic_name,
+            download_path if download_path else None)
+    if cover_done:
+        return
+    cover_cfg = getattr(crawler.site_crawler, 'CONFIG', {})
+    impl.set_active_referer(cover_cfg.get('image_referer'))
+    decrypt_cfg = cover_cfg.get('decrypt')
+    decryptor = impl._build_decryptor(crawler.site_crawler) if decrypt_cfg else None
+    if decryptor:
+        impl.set_active_decryptor(decryptor, decrypt_cfg.get('ext', 'jpg'))
+    try:
+        await impl.download_cover_image(cover_url, comic_name, download_path if download_path else None)
+    finally:
+        impl.set_active_referer(None)
+        impl.set_active_decryptor(None)
+
+
+async def _run_stream_async(crawler, target_comic_tab, comic_name, chapter_start, actual_end,
+                            download_path, progress_callback,
+                            download_thread_count, use_thread_only,
+                            first_timeout, retry_timeout,
+                            url_progress_callback=None, pre_download_hook=None, log=print,
+                            create_zip=False, download_cover=True):
+    """边采集边下载：逐章采集 → 立即下载本章 → 继续下一章。
+
+    章节图片 URL 只保留当前这一章，采集完马上进入下载，避免整本采集完才开始下。
+    """
+    impl = get_download_impl()
+    log(f"下载逻辑: {'旧版（v1.4.0 之前）' if impl is not _dl_new else '新版（当前）'}")
+    log("采集模式: 边采集边下载（采集完一章立即下载这一章）")
+
+    all_chapters_data = []
+    total_images = 0
+    failed_downloads = []
+    failed_json_path = None
+    should_zip = True
+
+    if download_cover:
+        await _download_cover_async(impl, crawler, target_comic_tab, comic_name, download_path, log)
+
+    for num in range(chapter_start, actual_end + 1):
+        log(f"采集第{num}章图片链接...")
+        data = crawler.collect_chapters_images(
+            target_comic_tab,
+            chapter_start=num,
+            chapter_end=num,
+            max_threads=1,
+            progress_callback=url_progress_callback
+        )
+        if not data:
+            log(f"第{num}章没有采集到图片，跳过")
+            continue
+        all_chapters_data.extend(data)
+        imgs = sum(len(c.get('herf_list') or []) for c in data)
+        total_images += imgs
+        if pre_download_hook:
+            pre_download_hook(total_images)
+        if imgs:
+            log(f"开始下载第{num}章（{imgs} 张）...")
+            fd, fjp, sz = await impl.download_all_chapters(
+                data,
+                comic_name,
+                download_path if download_path else None,
+                download_thread_count=download_thread_count,
+                progress_callback=progress_callback,
+                max_retries=3,
+                use_thread_only=use_thread_only,
+                first_timeout=first_timeout,
+                retry_timeout=retry_timeout,
+                site_crawler=crawler.site_crawler
+            )
+            failed_downloads.extend(fd)
+            if fjp:
+                failed_json_path = fjp
+            should_zip = should_zip and sz
+        else:
+            log(f"第{num}章无图片链接，跳过下载")
+
+    if create_zip and should_zip and all_chapters_data:
+        zip_main_folder(comic_name, download_path if download_path else None)
+
+    return {
+        'chapters_data': all_chapters_data,
+        'total_images': total_images,
+        'failed_downloads': failed_downloads,
+        'failed_json_path': failed_json_path,
+        'should_zip': should_zip,
+        'create_zip': create_zip,
+    }
+
+
 async def _run_download_async(crawler, target_comic_tab, comic_name, chapter_start, actual_end,
                               max_threads, download_path, progress_callback,
                               download_thread_count, use_thread_only,
                               first_timeout, retry_timeout,
                               url_progress_callback=None, pre_download_hook=None, log=print,
                               create_zip=False, download_cover=True):
+    impl = get_download_impl()
+    log(f"下载逻辑: {'旧版（v1.4.0 之前）' if impl is not _dl_new else '新版（当前）'}")
+
+    # 采集模式：边采集边下载（爬一章下一章）或 先全部采集再下载
+    if _stream_collect_mode():
+        return await _run_stream_async(
+            crawler, target_comic_tab, comic_name, chapter_start, actual_end,
+            download_path, progress_callback, download_thread_count, use_thread_only,
+            first_timeout, retry_timeout, url_progress_callback=url_progress_callback,
+            pre_download_hook=pre_download_hook, log=log, create_zip=create_zip,
+            download_cover=download_cover)
+
     all_chapters_data = crawler.collect_chapters_images(
         target_comic_tab,
         chapter_start=chapter_start,
@@ -48,34 +211,12 @@ async def _run_download_async(crawler, target_comic_tab, comic_name, chapter_sta
     if pre_download_hook:
         pre_download_hook(total_images)
 
-    log("正在获取封面图片...")
-    cover_url = crawler.get_cover_image(target_comic_tab)
-    if download_cover and cover_url:
-        # 加密站点优先使用浏览器渲染提取封面，失败回退HTTP下载
-        # （站点CONFIG声明cover_via_browser=False时封面为明文，直接HTTP下载）
-        cover_done = False
-        cover_cfg = getattr(crawler.site_crawler, 'CONFIG', {})
-        if is_browser_render_site(crawler.site_crawler) and cover_cfg.get('cover_via_browser', True):
-            cover_done = download_cover_via_browser(
-                target_comic_tab, crawler.site_crawler, comic_name,
-                download_path if download_path else None)
-        if not cover_done:
-            # 封面也需要 Referer/解密（与章节图相同配置）
-            cover_cfg = getattr(crawler.site_crawler, 'CONFIG', {})
-            set_active_referer(cover_cfg.get('image_referer'))
-            decrypt_cfg = cover_cfg.get('decrypt')
-            decryptor = _build_decryptor(crawler.site_crawler) if decrypt_cfg else None
-            if decryptor:
-                set_active_decryptor(decryptor, decrypt_cfg.get('ext', 'jpg'))
-            try:
-                await download_cover_image(cover_url, comic_name, download_path if download_path else None)
-            finally:
-                set_active_referer(None)
-                set_active_decryptor(None)
+    if download_cover:
+        await _download_cover_async(impl, crawler, target_comic_tab, comic_name, download_path, log)
 
     failed_downloads, failed_json_path, should_zip = [], None, True
     if all_chapters_data:
-        failed_downloads, failed_json_path, should_zip = await download_all_chapters(
+        failed_downloads, failed_json_path, should_zip = await impl.download_all_chapters(
             all_chapters_data,
             comic_name,
             download_path if download_path else None,
@@ -129,9 +270,9 @@ def run_download_flow(crawler, comic_name, comic_id=None, chapter_start=1, chapt
                should_zip, create_zip}
     """
     if image_name_padding is not None:
-        set_active_name_padding(image_name_padding)
+        _apply_name_padding(image_name_padding)
     if chapter_folder_naming is not None:
-        set_active_chapter_folder_naming(chapter_folder_naming)
+        _apply_chapter_folder_naming(chapter_folder_naming)
 
     target_comic_tab, comic_name = search_and_open(crawler, comic_name, comic_id, log)
     if not target_comic_tab:
@@ -223,9 +364,9 @@ def run_download_flow_selected(crawler, comic_name, selected_numbers, comic_id=N
         dict: 与 run_download_flow 结构一致（含 chapters_data/failed_downloads 等）
     """
     if image_name_padding is not None:
-        set_active_name_padding(image_name_padding)
+        _apply_name_padding(image_name_padding)
     if chapter_folder_naming is not None:
-        set_active_chapter_folder_naming(chapter_folder_naming)
+        _apply_chapter_folder_naming(chapter_folder_naming)
 
     target_comic_tab, comic_name = search_and_open(crawler, comic_name, comic_id, log)
     if not target_comic_tab:
