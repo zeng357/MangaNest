@@ -1,6 +1,6 @@
 # MangaNest · Usage Guide
 
-MangaNest · Multi-Site Manga Downloader — full user guide (chapter-list edition, v1.1).
+MangaNest · Multi-Site Manga Downloader — full user guide (chapter-list edition, v1.7.3).
 
 ## Contents
 
@@ -38,7 +38,7 @@ Both versions open the same GUI with three pages in the left sidebar: **🏠 Hom
 4. **Need login** (optional): check it, then `Open Login` (a browser opens) → sign in (QR/account) → `Login Done` (Cookie saved). Required for chapters that need login.
 5. **Load chapter list**: reads all chapters (number + name) and builds a checkable list.
 6. **Select chapters**: check the ones to download (all / partial / range).
-7. **Start download**: downloads all images of the selected chapters into `ComicName/ChapterName/N.jpg`.
+7. **Start download / Stop download**: the main button starts the selected chapters and downloads them into `ComicName/ChapterName/N.jpg`. While a run is active the same button reads **停止下载**; click it once to stop.
 8. **Retry tools**: "Retry failed images" and "Retry failed chapters" for failures.
 
 ### 2.2 Folder structure
@@ -49,6 +49,8 @@ ComicName/
 ├── 128 Final-Chap/
 │   ├── 1.jpg
 │   └── ...
+├── 128 Final-Chap.zip          # per-chapter package (ZIP or CBZ) beside the chapter folder
+├── download_state.json         # chapter completion marks, used for resume
 └── 127 Side-Story/
     ├── 1.jpg
     └── ...
@@ -58,6 +60,14 @@ ComicName/
 
 - **VIP/paid chapters**: guests only see preview pages. After login, free chapters download fully; VIP paid chapters need a matching membership. The program never bypasses paywalls.
 - Some sites lazy-load chapter lists/images — the program auto-scrolls and paginates.
+
+### 2.4 Stop and resume
+
+- **One button, two states**: when idle it reads **开始下载**; after a run starts it reads **停止下载**; after you click stop it shows **正在停止…** until the workers finish the request already in flight.
+- **When stop takes effect**: before the next search, chapter collection, image request, retry, chapter package or final packaging step. The image currently downloading is allowed to finish; no new image or chapter is started.
+- **What is kept**: every image and chapter already downloaded, the chapter list, and `image_urls.json`. The run is not rolled back.
+- **How to continue**: use **下载失败图片** (retry failed images) or start the same chapter again. The next run reuses the saved image list and skips files that already exist.
+- **Chapter packages**: ZIP/CBZ and `download_state.json` are written only for chapters that actually finished; a stopped chapter is left without a package mark so it can be resumed.
 
 ---
 

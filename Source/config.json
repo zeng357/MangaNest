@@ -1,15 +1,36 @@
 {
   "cookies_dir": "cookies",
   "download_path": "E:/狐妖小红娘",
-  "max_tabs": "5",
-  "download_threads": "4",
-  "download_mode": "coroutine",
-  "first_timeout": "8",
-  "retry_timeout": "15",
+  "max_tabs": "8",
+  "download_threads": "8",
+  "download_mode": "thread_only",
+  "download_logic": "legacy",
+  "first_timeout": "5",
+  "retry_timeout": "10",
   "browser_type": "edge",
   "browser_mode": "headed",
   "browser_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
   "create_zip": false,
+  "human_mode": false,
+  "human_scope": "selected",
+  "human_sites": [
+    "漫画客"
+  ],
+  "download_engine": "legacy",
+  "fast_thread": true,
+  "fast_thread_sites": [
+    "拷贝漫画",
+    "Mgread",
+    "漫画客"
+  ],
+  "yumanhua_batch_limit": false,
+  "collect_mode": "batch",
+  "skip_done_chapters": false,
+  "zip_per_chapter": true,
+  "cbz_mode": false,
+  "auto_export": "不导出",
+  "follow_enabled": false,
+  "follow_interval_min": "10",
   "image_name_padding": "0",
   "chapter_folder_naming": "title",
   "window_size": "medium",
@@ -18,5 +39,6 @@
   "proxy_file": "proxies.txt",
   "proxy_url": "",
   "proxy_browser": "",
-  "proxy_allow_direct": true
+  "proxy_allow_direct": true,
+  "prevent_sleep": true
 }

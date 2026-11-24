@@ -4,6 +4,16 @@
 
 A manga downloader that runs on Windows and supports multiple manga websites: built-in crawlers + custom site adapters (JSON rules) + an Auto Site Analyzer wizard — paste any new website, the program automatically analyzes its search/chapter/image structure and generates a reusable adapter.
 
+**v1.7.3 — test build merged into the formal build; stop button; Mgread update**
+- **One build from now on**: the merged formal build is the only maintained version. The test build is archived as a source ZIP.
+- **Start / Stop toggle**: the main button reads **开始下载** when idle. After it is clicked it becomes **停止下载**; clicking it again shows **正在停止…**, stops the current run and closes the download browser. The stop is checked before the next search, chapter collection, image request, retry, chapter package or final packaging step, so it usually takes effect within one image.
+- **Stop keeps your work**: downloaded images and finished chapters are kept; `image_urls.json` is preserved so **下载失败图片** / the next run can resume. Only unfinished requests are abandoned.
+- **Chapter packages fixed**: both the old and new download logic, and both batch and stream collection modes, now write the per-chapter ZIP (`<chapter>.zip`) or CBZ and the `download_state.json` completion marks. Missing packages are filled in without re-downloading existing images.
+- **Cover failure cleanup**: a failed cover download no longer leaves an empty `0/` folder behind.
+- **Mgread (mgread.io) updated**: the WordPress REST search endpoint now returns Cloudflare 403. The crawler fails it fast (one 4 s attempt, 30 min cooldown) and uses the normal `/?s=` search page instead. Chapter pagination stops on a short page (< 20 rows), so the last page is no longer requested and retried 8 times. Verified offline with a 200-chapter title; the last chapter still returned its 15 images.
+- **v1.7 baseline included**: chapter expressions (`1,3,5-20`), per-chapter ZIP/CBZ with `ComicInfo.xml`, image integrity checks, chapter-list cache, chapter-level resume, safe folder names, CLI, auto-export after download, and follow-new-chapters mode.
+- **Formal defaults**: 8 collection tabs / 8 download threads, 5 s first timeout / 10 s retry timeout, `thread_only`, batch collection, per-chapter ZIP on, fast-thread sites = 拷贝漫画 / Mgread / 漫画客, auto-export and follow mode off.
+
 **v1.1 new features**: 🔄 **Format Converter page** (turn downloaded manga images into PDF / CBZ / EPUB / MOBI e-books — one-click whole-book merge, multi-folder merge, automatic original cover), **startup self-check** (writes diagnostic logs), **one-click network-stack repair** script.
 
 **v1.1.1 new features**: 🔐 **Secure Login Vault** — login sessions are now stored in an **AES-256-GCM encrypted container**:

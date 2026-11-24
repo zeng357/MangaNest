@@ -84,3 +84,19 @@ COLLECT_MODE = 'batch'
 # True = 批次限速：每 10 张整批停 2.5~5 分钟、章间 5~10 分钟、单章 2 线程/2 并发
 YUMANHUA_BATCH_LIMIT = False
 
+# ---------- 测试版新功能（设置页『跳过已下载章节』/『按章节打包』控制） ----------
+# True = 下载前跳过 download_state.json 里已标记完成的章节（断点续传）
+SKIP_DONE_CHAPTERS = False
+# True = 每章下载成功后单独打一个 zip（漫画目录/章节名.zip），便于阅读器按章读取
+ZIP_PER_CHAPTER = False
+# 目录名安全化（非法字符替换 + 长度截断）默认开启，可关
+SAFE_FOLDER_NAME = True
+
+# ---------- 测试版 v1.7 新增 ----------
+# True = 按章打包生成 .cbz（带 ComicInfo.xml，Venera/KOReader 等阅读器可识别）；False = .zip
+CBZ_MODE = False
+# True = 下载后校验图片结构完整性（JPEG 缺 EOI / PNG 缺 IEND 视为坏图并重下）
+VERIFY_IMAGE_INTEGRITY = True
+# 章节表缓存有效期（小时）；缓存命中时点"加载章节表"不再打开浏览器爬目录
+CHAPTER_CACHE_HOURS = 12
+

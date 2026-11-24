@@ -4,6 +4,7 @@ import time
 
 import downloader as _dl_new
 from utils import zip_main_folder
+import stop_control
 
 
 def get_download_impl():
@@ -106,6 +107,60 @@ async def _download_cover_async(impl, crawler, target_comic_tab, comic_name, dow
         impl.set_active_decryptor(None)
 
 
+def _finalize_chapter_packages(comic_name, download_path, all_chapters_data,
+                               failed_downloads, log):
+    """下载完成后统一补一次按章 zip/CBZ。
+
+    新版下载器自己会打包，但旧版下载逻辑（v1.4.0 之前）没有这段；
+    这里统一兜底，保证「按章节打包」在两种下载逻辑下都生效。
+    只补缺失的包，已存在的不重复压缩。
+    """
+    try:
+        import config
+        import os
+        if not bool(getattr(config, 'ZIP_PER_CHAPTER', False)):
+            return
+        if failed_downloads:
+            log(f"有 {len(failed_downloads)} 张图片失败，跳过按章打包")
+            return
+        folder = os.path.join(
+            download_path if download_path else os.getcwd(),
+            _dl_new.comic_folder_name(comic_name)
+        )
+        if not os.path.isdir(folder):
+            return
+        # 旧版下载逻辑不写章节断点；这里统一补标记，保证「跳过已下载章节」两种逻辑都可用
+        if not failed_downloads and all_chapters_data:
+            for ch in all_chapters_data:
+                num = ch.get('chapter_num')
+                if num is None:
+                    continue
+                ch_dir = os.path.join(folder, _dl_new.chapter_folder_name(ch))
+                if os.path.isdir(ch_dir) and os.listdir(ch_dir):
+                    _dl_new.mark_chapter_done(folder, num, ch.get('title') or '')
+        ext = '.cbz' if bool(getattr(config, 'CBZ_MODE', False)) else '.zip'
+        image_exts = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp')
+        missing = False
+        for name in os.listdir(folder):
+            chapter_dir = os.path.join(folder, name)
+            if not os.path.isdir(chapter_dir):
+                continue
+            has_image = False
+            for root, _dirs, files in os.walk(chapter_dir):
+                if any(os.path.splitext(f)[1].lower() in image_exts for f in files):
+                    has_image = True
+                    break
+            if has_image and not os.path.exists(os.path.join(folder, f'{name}{ext}')):
+                missing = True
+                break
+        if not missing:
+            return
+        titles = {c.get('chapter_num'): c.get('title') or '' for c in all_chapters_data}
+        _dl_new.zip_each_chapter(folder, comic_name=comic_name, chapter_titles=titles)
+    except Exception as e:
+        log(f"按章打包失败: {e}")
+
+
 async def _run_stream_async(crawler, target_comic_tab, comic_name, chapter_start, actual_end,
                             download_path, progress_callback,
                             download_thread_count, use_thread_only,
@@ -126,10 +181,11 @@ async def _run_stream_async(crawler, target_comic_tab, comic_name, chapter_start
     failed_json_path = None
     should_zip = True
 
-    if download_cover:
+    if download_cover and not stop_control.is_stopped():
         await _download_cover_async(impl, crawler, target_comic_tab, comic_name, download_path, log)
 
     for num in range(chapter_start, actual_end + 1):
+        stop_control.check()
         log(f"采集第{num}章图片链接...")
         data = crawler.collect_chapters_images(
             target_comic_tab,
@@ -167,8 +223,15 @@ async def _run_stream_async(crawler, target_comic_tab, comic_name, chapter_start
         else:
             log(f"第{num}章无图片链接，跳过下载")
 
+    if stop_control.is_stopped():
+        log("已停止下载，跳过压缩与章节收尾")
+        should_zip = False
+        create_zip = False
     if create_zip and should_zip and all_chapters_data:
         zip_main_folder(comic_name, download_path if download_path else None)
+    if not stop_control.is_stopped():
+        _finalize_chapter_packages(comic_name, download_path, all_chapters_data,
+                                   failed_downloads, log)
 
     return {
         'chapters_data': all_chapters_data,
@@ -206,16 +269,17 @@ async def _run_download_async(crawler, target_comic_tab, comic_name, chapter_sta
         progress_callback=url_progress_callback
     )
 
+    stop_control.check()
     total_images = sum(len(c['herf_list']) for c in all_chapters_data)
     log(f"将下载 {len(all_chapters_data)} 个章节")
     if pre_download_hook:
         pre_download_hook(total_images)
 
-    if download_cover:
+    if download_cover and not stop_control.is_stopped():
         await _download_cover_async(impl, crawler, target_comic_tab, comic_name, download_path, log)
 
     failed_downloads, failed_json_path, should_zip = [], None, True
-    if all_chapters_data:
+    if all_chapters_data and not stop_control.is_stopped():
         failed_downloads, failed_json_path, should_zip = await impl.download_all_chapters(
             all_chapters_data,
             comic_name,
@@ -229,8 +293,15 @@ async def _run_download_async(crawler, target_comic_tab, comic_name, chapter_sta
             site_crawler=crawler.site_crawler
         )
 
+    if stop_control.is_stopped():
+        log("已停止下载，跳过压缩与章节收尾")
+        should_zip = False
+        create_zip = False
     if create_zip and should_zip and all_chapters_data:
         zip_main_folder(comic_name, download_path if download_path else None)
+    if not stop_control.is_stopped():
+        _finalize_chapter_packages(comic_name, download_path, all_chapters_data,
+                                   failed_downloads, log)
 
     return {
         'chapters_data': all_chapters_data,
@@ -275,12 +346,14 @@ def run_download_flow(crawler, comic_name, comic_id=None, chapter_start=1, chapt
         _apply_chapter_folder_naming(chapter_folder_naming)
 
     target_comic_tab, comic_name = search_and_open(crawler, comic_name, comic_id, log)
+    stop_control.check()
     if not target_comic_tab:
         raise RuntimeError("未找到漫画，请检查名称/ID是否正确")
     log("成功打开漫画详情页")
 
     log("正在获取章节数量...")
     total_chapters = crawler.get_chapter_count(target_comic_tab)
+    stop_control.check()
 
     # 章节计数稳定性校验：部分站点章节列表懒加载/折叠，首次计数可能偏低
     # （如gmh折叠态只渲染约10章、baozimh页面元素未就绪）。连续重读，直到
@@ -369,12 +442,14 @@ def run_download_flow_selected(crawler, comic_name, selected_numbers, comic_id=N
         _apply_chapter_folder_naming(chapter_folder_naming)
 
     target_comic_tab, comic_name = search_and_open(crawler, comic_name, comic_id, log)
+    stop_control.check()
     if not target_comic_tab:
         raise RuntimeError("未找到漫画，请检查名称/ID是否正确")
     log("成功打开漫画详情页")
 
     log("正在获取章节数量...")
     total_chapters = crawler.get_chapter_count(target_comic_tab)
+    stop_control.check()
     if getattr(crawler, 'needs_browser', True):
         max_retries = 3
         last_count = total_chapters
@@ -409,6 +484,7 @@ def run_download_flow_selected(crawler, comic_name, selected_numbers, comic_id=N
     should_zip = True
 
     for idx, (r_start, r_end) in enumerate(runs):
+        stop_control.check()
         log(f"下载连续段 {idx + 1}/{len(runs)}: 第{r_start}章 到 第{r_end}章")
         res = asyncio.run(_run_download_async(
             crawler, target_comic_tab, comic_name, r_start, r_end,
@@ -424,6 +500,9 @@ def run_download_flow_selected(crawler, comic_name, selected_numbers, comic_id=N
             failed_json_path = res['failed_json_path']
         should_zip = should_zip and res['should_zip']
 
+    if stop_control.is_stopped():
+        should_zip = False
+        create_zip = False
     if create_zip and should_zip and all_chapters_data:
         zip_main_folder(comic_name, download_path if download_path else None)
 

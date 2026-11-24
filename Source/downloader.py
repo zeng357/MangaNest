@@ -12,6 +12,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 import winreg
 import random
+import stop_control
 
 
 # ==================== 模拟人工（全站默认） ====================
@@ -422,11 +423,230 @@ def set_active_chapter_folder_naming(mode):
 
 
 def sanitize_folder_name(name):
-    """清洗文件夹名称：替换Windows非法字符，压缩空白，去除首尾空格/点"""
+    """清洗文件夹名称：替换Windows非法字符，压缩空白，去除首尾空格/点，长度截断 85"""
     import re
     name = re.sub(r'[\\/:*?"<>|\r\n\t]', ' ', str(name))
     name = re.sub(r'\s+', ' ', name).strip(' .')
-    return name
+    return name[:85]
+
+
+def comic_folder_name(comic_name):
+    """漫画主文件夹名：默认做安全化（可被 config.SAFE_FOLDER_NAME 关闭）"""
+    try:
+        import config as _cfg
+        if not bool(getattr(_cfg, 'SAFE_FOLDER_NAME', True)):
+            return str(comic_name)
+    except Exception:
+        pass
+    safe = sanitize_folder_name(comic_name)
+    return safe or '未命名'
+
+
+def _state_file(comic_dir):
+    return os.path.join(comic_dir, 'download_state.json')
+
+
+def load_download_state(comic_dir):
+    """读取章节完成标记（不存在时返回空结构）"""
+    path = _state_file(comic_dir)
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                data.setdefault('chapters', {})
+                return data
+    except Exception as e:
+        print(f"读取下载状态失败，按未下载处理: {e}")
+    return {'chapters': {}}
+
+
+def mark_chapter_done(comic_dir, chapter_num, title=''):
+    """标记某章已完整下载（章节级断点，顺带记录章节名供 CBZ 元数据使用）"""
+    state = load_download_state(comic_dir)
+    key = str(chapter_num)
+    entry = state['chapters'].get(key) or {}
+    entry['done'] = True
+    entry['time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    if title:
+        entry['title'] = str(title)
+    state['chapters'][key] = entry
+    state['updated'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        os.makedirs(comic_dir, exist_ok=True)
+        with open(_state_file(comic_dir), 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"写入下载状态失败: {e}")
+
+
+def chapter_is_done(comic_dir, chapter_data):
+    state = load_download_state(comic_dir)
+    return bool((state['chapters'].get(str(chapter_data.get('chapter_num'))) or {}).get('done'))
+
+
+def _skip_done_enabled():
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, 'SKIP_DONE_CHAPTERS', False))
+    except Exception:
+        return False
+
+
+def _zip_per_chapter_enabled():
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, 'ZIP_PER_CHAPTER', False))
+    except Exception:
+        return False
+
+
+def _cbz_mode_enabled():
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, 'CBZ_MODE', False))
+    except Exception:
+        return False
+
+
+def _xml_escape(text):
+    return (str(text).replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+def build_comic_info(series, title='', number=0, volume=1, page_count=0, summary=''):
+    """ComicInfo.xml（CBZ 元数据，主流阅读器通用）
+
+    字段覆盖 ComicRack 规范常用项：Series/Title/Number/Volume/PageCount/
+    Manga/SeriesSort/LanguageISO，便于 Kavita、Komga、Moon+ 等识别系列。
+    """
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<ComicInfo>\n'
+        f'  <Series>{_xml_escape(series)}</Series>\n'
+        f'  <SeriesSort>{_xml_escape(series)}</SeriesSort>\n'
+        f'  <Title>{_xml_escape(title)}</Title>\n'
+        f'  <Number>{int(number)}</Number>\n'
+        f'  <Volume>{int(volume)}</Volume>\n'
+        f'  <PageCount>{int(page_count)}</PageCount>\n'
+        '  <Manga>Yes</Manga>\n'
+        '  <LanguageISO>zh</LanguageISO>\n'
+        + (f'  <Summary>{_xml_escape(summary)}</Summary>\n' if summary else '') +
+        '</ComicInfo>\n'
+    )
+
+
+def zip_each_chapter(comic_dir, comic_name=None, chapter_titles=None):
+    """把漫画目录下每个章节目录打成同名压缩包（不删原图）
+
+    config.CBZ_MODE=True 时输出 .cbz 并写入 ComicInfo.xml；
+    否则保持原 .zip 行为。
+    """
+    import zipfile
+    if not os.path.isdir(comic_dir):
+        return 0
+    as_cbz = _cbz_mode_enabled()
+    titles = dict(chapter_titles or {})
+    # 已下载章节的标题从 download_state.json 补齐（重跑时只带当前章节会导致旧章标题丢失）
+    try:
+        state = load_download_state(comic_dir)
+        for k, v in (state.get('chapters') or {}).items():
+            num_key = int(k)
+            if num_key not in titles and v.get('title'):
+                titles[num_key] = v.get('title')
+    except Exception:
+        pass
+    count = 0
+    for name in sorted(os.listdir(comic_dir)):
+        chapter_dir = os.path.join(comic_dir, name)
+        if not os.path.isdir(chapter_dir):
+            continue
+        ext = '.cbz' if as_cbz else '.zip'
+        zip_path = os.path.join(comic_dir, f"{name}{ext}")
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for root, _dirs, files in os.walk(chapter_dir):
+                    for fn in files:
+                        fp = os.path.join(root, fn)
+                        zf.write(fp, os.path.relpath(fp, chapter_dir))
+                if as_cbz:
+                    num = 0
+                    try:
+                        num = int(str(name).split(' ')[0])
+                    except Exception:
+                        num = 0
+                    # 页数 = 章节目录里的图片数量（ComicInfo PageCount）
+                    page_count = 0
+                    for root2, _dirs2, files2 in os.walk(chapter_dir):
+                        page_count += sum(1 for f2 in files2
+                                          if os.path.splitext(f2)[1].lower()
+                                          in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'))
+                    info = build_comic_info(
+                        comic_name or os.path.basename(comic_dir),
+                        titles.get(num) or (str(name).split(' ', 1)[1] if ' ' in str(name) else ''),
+                        num, page_count=page_count)
+                    zf.writestr('ComicInfo.xml', info)
+            count += 1
+        except Exception as e:
+            print(f"按章打包失败 {name}: {e}")
+    if count:
+        print(f"按章节打包完成：{count} 个 {'cbz' if as_cbz else 'zip'}")
+    return count
+
+
+def image_integrity_ok_bytes(data):
+    """图片结构完整性校验（只看明确截断，不做画质判断）
+
+    JPEG：必须 FFD8 开头且在尾部 64KB 内出现 FFD9 结束标记
+    PNG ：必须 PNG 签名且尾部出现 IEND
+    GIF ：GIF8 开头且末字节为 0x3B
+    WEBP：RIFF....WEBP 且 RIFF 长度字段与文件长度一致（允许 4 字节误差）
+    其它格式不认识则放过。
+    """
+    try:
+        if not data:
+            return False, '内容为空'
+        head = data[:16]
+        probe = data[:200].lstrip().lower()
+        if probe[:1] == b'<' or b'<html' in probe or b'<!doctype' in probe:
+            return False, '返回网页内容而非图片（可能被防盗链拦截）'
+        if head[:2] == b'\xff\xd8':
+            if b'\xff\xd9' not in data[-65536:]:
+                return False, 'JPEG 不完整（缺少结束标记）'
+            return True, 'jpeg'
+        if head[:8] == b'\x89PNG\r\n\x1a\n':
+            if b'IEND' not in data[-65536:]:
+                return False, 'PNG 不完整（缺少 IEND）'
+            return True, 'png'
+        if head[:3] == b'GIF':
+            if data[-1:] != b'\x3b':
+                return False, 'GIF 不完整（缺少结束符）'
+            return True, 'gif'
+        if head[:4] == b'RIFF' and data[8:12] == b'WEBP':
+            declared = int.from_bytes(data[4:8], 'little') + 8
+            if abs(declared - len(data)) > 4:
+                return False, f'WEBP 长度不符（声明{declared} 实际{len(data)}）'
+            return True, 'webp'
+        return True, 'unknown'
+    except Exception as e:
+        return True, f'校验跳过: {e}'
+
+
+def image_integrity_ok_file(path):
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+        return image_integrity_ok_bytes(data)
+    except Exception as e:
+        return False, f'读取失败: {e}'
+
+
+def _verify_integrity_enabled():
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, 'VERIFY_IMAGE_INTEGRITY', True))
+    except Exception:
+        return True
 
 
 def chapter_folder_name(chapter_data):
@@ -677,7 +897,7 @@ def download_chapters_via_browser(site_crawler, all_chapters_data, comic_name, b
 
     render_mode = getattr(site_crawler, 'CONFIG', {}).get('render_mode', 'canvas')
 
-    main_folder = os.path.join(base_path, comic_name)
+    main_folder = os.path.join(base_path, comic_folder_name(comic_name))
     if not os.path.exists(main_folder):
         os.makedirs(main_folder)
 
@@ -1251,6 +1471,13 @@ async def download_with_aiohttp(url, file_path, timeout=10, proxy=None):
                                 return False, "解密失败"
                         # 只要有内容就算成功（即使是空白图片）
                         if len(content) > 0:
+                            if _verify_integrity_enabled():
+                                ok, why = image_integrity_ok_bytes(content)
+                                if not ok:
+                                    if pool is not None:
+                                        pool.report(attempt_proxy, False)
+                                    last_info = f"图片不完整：{why}"
+                                    continue
                             async with aiofiles.open(file_path, 'wb') as f:
                                 await f.write(content)
                             if pool is not None:
@@ -1356,6 +1583,17 @@ def download_with_requests(url, file_path, timeout=10, proxy=None):
             # 只要有内容就算成功（即使是空白图片）
             file_size = os.path.getsize(file_path)
             if file_size > 0:
+                if _verify_integrity_enabled():
+                    ok, why = image_integrity_ok_file(file_path)
+                    if not ok:
+                        try:
+                            os.remove(file_path)
+                        except Exception:
+                            pass
+                        if pool is not None:
+                            pool.report((attempt_proxies or {}).get('http'), False)
+                        last_info = f"图片不完整：{why}"
+                        continue
                 if pool is not None:
                     pool.report((attempt_proxies or {}).get('http'), True)
                 return True, file_size
@@ -1419,7 +1657,11 @@ async def download_batch_coroutine(images_to_download, concurrent_limit, progres
     failed_list = []
 
     async def download_with_semaphore(url, index, folder_name, chapter_num):
+        if stop_control.is_stopped():
+            return
         async with semaphore:
+            if stop_control.is_stopped():
+                return
             failed_info = await download_image(url, index, folder_name, chapter_num, progress_callback, timeout=timeout)
             if failed_info:
                 failed_list.append(failed_info)
@@ -1449,6 +1691,8 @@ def retry_failed_batch(failed_list, progress_callback=None, max_workers=8, timeo
         timeout: 下载超时时间（秒）
     """
     def retry_single(img_info):
+        if stop_control.is_stopped():
+            return img_info
         url = img_info['url']
         file_path = img_info['path']
         index = img_info['image_index']
@@ -1504,6 +1748,8 @@ def download_batch_thread_only(images_to_download, thread_count=8, progress_call
     
     def download_single(args):
         url, index, folder_name, chapter_num = args
+        if stop_control.is_stopped():
+            return None
         file_path = os.path.join(folder_name, format_image_name(index, f".{_ACTIVE_IMAGE_EXT}"))
         
         # 使用requests直接下载
@@ -1555,6 +1801,8 @@ def download_batch_thread_coroutine(images_to_download, concurrent_limit, thread
     """
     def process_chunk(chunk):
         """在线程中运行协程下载"""
+        if stop_control.is_stopped():
+            return []
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -1683,7 +1931,7 @@ def save_image_urls_to_json(all_chapters_data, comic_name, base_path=None):
     if base_path is None:
         base_path = os.getcwd()
     
-    main_folder = os.path.join(base_path, comic_name)
+    main_folder = os.path.join(base_path, comic_folder_name(comic_name))
     
     url_mapping = {
         "comic_name": comic_name,
@@ -1746,10 +1994,29 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     if base_path is None:
         base_path = os.getcwd()
 
-    main_folder = os.path.join(base_path, comic_name)
+    main_folder = os.path.join(base_path, comic_folder_name(comic_name))
     if not os.path.exists(main_folder):
         os.makedirs(main_folder)
-    
+
+    # 测试版：跳过已完整下载的章节（download_state.json 断点）
+    if _skip_done_enabled():
+        state = load_download_state(main_folder)
+        kept = []
+        skipped = 0
+        for ch in all_chapters_data:
+            num = ch.get('chapter_num')
+            if (state['chapters'].get(str(num)) or {}).get('done'):
+                skipped += 1
+                continue
+            kept.append(ch)
+        if skipped:
+            print(f"跳过已下载章节：{skipped} 章（可在设置页关闭『跳过已下载章节』）")
+            all_chapters_data = kept
+        if not all_chapters_data:
+            print("所有章节均已下载完成，无需再下载")
+            set_active_referer(None)
+            return [], None, True
+
     json_path = save_image_urls_to_json(all_chapters_data, comic_name, base_path)
     
     if save_json_only:
@@ -1854,6 +2121,9 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
         )
     else:
         for chapter_data in all_chapters_data:
+            if stop_control.is_stopped():
+                print("已请求停止下载：不再开始新章节")
+                break
             chapter_num = chapter_data['chapter_num']
             herf_list = chapter_data['herf_list']
 
@@ -1876,7 +2146,7 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
     
     # 所有章节下载完成后，统一重试所有失败图片（浏览器模式无法HTTP重试，跳过）
     use_browser_mode = is_browser_render_site(site_crawler)
-    if all_failed and not use_browser_mode:
+    if all_failed and not use_browser_mode and not stop_control.is_stopped():
         retry_rounds = 2  # 首轮下载后，再自动重试 2 轮，直到无失败或轮次用完
         for round_no in range(1, retry_rounds + 1):
             print(f"\n{'='*50}")
@@ -1897,6 +2167,22 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
             if not all_failed:
                 break
     
+    # 测试版：章节级完成标记（仅无失败章）+ 按章节打包 zip
+    try:
+        failed_chapters = {f.get('chapter_num') for f in all_failed}
+        for ch in all_chapters_data:
+            num = ch.get('chapter_num')
+            if num in failed_chapters:
+                continue
+            ch_dir = os.path.join(main_folder, chapter_folder_name(ch))
+            if os.path.isdir(ch_dir) and os.listdir(ch_dir):
+                mark_chapter_done(main_folder, num, ch.get('title') or '')
+        if (not all_failed) and (not stop_control.is_stopped()) and _zip_per_chapter_enabled():
+            chapter_titles = {c.get('chapter_num'): c.get('title') or '' for c in all_chapters_data}
+            zip_each_chapter(main_folder, comic_name=comic_name, chapter_titles=chapter_titles)
+    except Exception as e:
+        print(f"章节标记/按章打包失败: {e}")
+
     # 保存失败列表到JSON（附带站点信息，供浏览器模式重试使用）
     if all_failed:
         print(f"\n失败的图片URL列表:")
@@ -1918,6 +2204,16 @@ async def download_all_chapters(all_chapters_data, comic_name, base_path=None, s
         reset_active_image_breaks()
         set_active_proxy_pool(None)
         return all_failed, failed_json_path, False  # 有失败图片，不压缩
+    if stop_control.is_stopped():
+        print("已停止下载：保留 image_urls.json 便于续传")
+        set_active_referer(None)
+        set_active_decryptor(None)
+        set_active_download_delay(0)
+        set_active_download_limits(0, 0)
+        reset_active_chapter_pause()
+        reset_active_image_breaks()
+        set_active_proxy_pool(None)
+        return all_failed, None, False
     else:
         # 全部成功，删除JSON文件
         json_path = os.path.join(main_folder, "image_urls.json")
@@ -1946,11 +2242,12 @@ def save_failed_json(failed_list, comic_name, base_path=None, site_name=None, re
     if base_path is None:
         base_path = os.getcwd()
     
-    # 如果base_path已经以comic_name结尾，则不再拼接
-    if base_path.endswith(comic_name) or base_path.endswith(comic_name + os.sep):
+    # 如果base_path已经以漫画目录名结尾，则不再拼接
+    safe_name = comic_folder_name(comic_name)
+    if base_path.endswith(safe_name) or base_path.endswith(safe_name + os.sep):
         main_folder = base_path
     else:
-        main_folder = os.path.join(base_path, comic_name)
+        main_folder = os.path.join(base_path, safe_name)
     
     # 确保文件夹存在
     os.makedirs(main_folder, exist_ok=True)
@@ -2242,10 +2539,11 @@ async def download_cover_image(url, comic_name, base_path=None):
     if base_path is None:
         base_path = os.getcwd()
 
-    main_folder = os.path.join(base_path, comic_name)
+    main_folder = os.path.join(base_path, comic_folder_name(comic_name))
     folder_name = os.path.join(main_folder, "0")
 
-    if not os.path.exists(folder_name):
+    created_cover_dir = not os.path.exists(folder_name)
+    if created_cover_dir:
         os.makedirs(folder_name)
 
     print(f"\n开始下载封面...")
@@ -2260,6 +2558,14 @@ async def download_cover_image(url, comic_name, base_path=None):
         print("封面下载成功")
         return True
     else:
+        # 封面失败时不留下空的 "0" 章节目录/半截文件，避免目录看起来像缺章节
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            if created_cover_dir and not os.listdir(folder_name):
+                os.rmdir(folder_name)
+        except Exception:
+            pass
         print(f"封面下载失败: {info}")
         print(f"URL: {url}")
         return False

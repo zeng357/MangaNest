@@ -1,5 +1,5 @@
 # GUI界面 - 通用漫画下载器
-from utils import ensure_console_safe
+from utils import ensure_console_safe, parse_chapter_expression
 ensure_console_safe()  # 入口加固：防GBK打印崩溃/无控制台print异常，须在其他导入前执行
 
 import tkinter as tk
@@ -11,7 +11,8 @@ import time
 import json
 from crawler import ComicCrawler
 from download_flow import run_download_flow, run_download_flow_selected, search_and_open
-from downloader import is_browser_render_site, get_active_proxy
+import stop_control
+from downloader import is_browser_render_site, get_active_proxy, sanitize_folder_name
 from config import DEFAULT_SITE, BROWSER_PATHS, DEFAULT_COOKIES_DIR, CONFIG_FILE, DEFAULT_IMAGE_NAME_PADDING, DEFAULT_CHAPTER_FOLDER_NAMING
 from site_discovery import get_all_site_names, get_sites_requiring_login, get_sites_supporting_cookie, get_site_download_mode, refresh_sites as _refresh_sites_cache, add_site_file as _add_site_file, add_site_folder as _add_site_folder, remove_site as _remove_site, _get_data_dir, get_all_sites_info
 from site_discovery import (get_custom_sites_dir, is_rule_site, get_adapter_by_site_name,
@@ -35,6 +36,50 @@ CHAPTER_FOLDER_NAMING_OPTIONS = [
     ('数字（1、2、3...）', 'number'),
     ('章节名（1 第1话 标题...）', 'title'),
 ]
+
+
+def _chapter_cache_path(site, key):
+    """章节表缓存文件路径：cache/chapter_cache/<站点>__<漫画>.json"""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'chapter_cache')
+    safe_site = sanitize_folder_name(str(site)) or 'site'
+    safe_key = sanitize_folder_name(str(key))[:60] or 'comic'
+    return os.path.join(base, f"{safe_site}__{safe_key}.json")
+
+
+def _load_chapter_cache(path, hours):
+    """读取有效期内缓存 -> (total, titles, age_seconds)；无效返回 None"""
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        age = time.time() - float(data.get('time') or 0)
+        if age < 0 or age > float(hours) * 3600:
+            return None
+        total = int(data.get('total') or 0)
+        titles = {int(k): str(v) for k, v in (data.get('titles') or {}).items()}
+        if total <= 0:
+            return None
+        return total, titles, age
+    except Exception as e:
+        print(f"读取章节表缓存失败: {e}")
+        return None
+
+
+def _save_chapter_cache(path, site, comic, total, titles):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = {
+            'site': site,
+            'comic': comic,
+            'total': int(total),
+            'titles': {str(k): v for k, v in (titles or {}).items()},
+            'time': time.time(),
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"写入章节表缓存失败: {e}")
 
 
 def _chapter_naming_to_label(mode):
@@ -91,6 +136,9 @@ class GenericComicDownloaderGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("通用漫画下载器")
+        self._download_running = False
+        self._stopping = False
+        self._active_crawler = None
         self.root.geometry("960x720")
         self.root.resizable(True, True)
         # 关闭窗口时释放禁止休眠状态并保存配置
@@ -268,6 +316,15 @@ class GenericComicDownloaderGUI:
         ttk.Entry(chapter_row, textvariable=self.chapter_end_var, width=6).pack(side=tk.LEFT, padx=2)
         ttk.Label(chapter_row, text="(0=末章)", font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=4)
 
+        # 章节表达式（覆盖上面的起止范围）：all / 1,3,5-20
+        expr_row = ttk.Frame(left_col)
+        expr_row.pack(fill=tk.X, pady=2)
+        ttk.Label(expr_row, text="章节表达式:", width=9).pack(side=tk.LEFT)
+        self.chapter_expr_var = tk.StringVar(value="")
+        ttk.Entry(expr_row, textvariable=self.chapter_expr_var, width=22).pack(side=tk.LEFT, padx=2)
+        ttk.Label(expr_row, text="如 1,3,5-20 或 all（留空=用上面的范围）",
+                  font=("微软雅黑", 9), foreground="gray").pack(side=tk.LEFT, padx=4)
+
         # 漫画ID (腾讯动漫/快看)
         self.comic_id_frame = ttk.Frame(left_col)
         self.use_comic_id_var = tk.BooleanVar(value=False)
@@ -354,6 +411,16 @@ class GenericComicDownloaderGUI:
         self.yumanhua_batch_var = tk.BooleanVar(value=False)
         # 采集模式：batch=先采集全部再下载（默认），stream=边采集边下载（爬一章下一章）
         self.collect_mode_var = tk.StringVar(value='batch')
+        # 测试版：跳过已下载章节（章节级断点）/ 按章节打包 zip
+        self.skip_done_var = tk.BooleanVar(value=False)
+        self.zip_per_chapter_var = tk.BooleanVar(value=False)
+        self.cbz_mode_var = tk.BooleanVar(value=False)
+        # v1.7.3：下载完成后自动导出（不导出/PDF/EPUB/CBZ/MOBI）
+        self.auto_export_var = tk.StringVar(value='不导出')
+        # v1.7.3：追更（定时检查新章节，只补新章）
+        self.follow_enabled_var = tk.BooleanVar(value=False)
+        self.follow_interval_var = tk.StringVar(value='10')
+        self._follow_job = None
         self.image_name_padding_var = tk.StringVar(value=str(DEFAULT_IMAGE_NAME_PADDING))
         self.chapter_folder_naming_var = tk.StringVar(value=DEFAULT_CHAPTER_FOLDER_NAMING)
         self.window_size_var = tk.StringVar(value="medium")
@@ -379,6 +446,8 @@ class GenericComicDownloaderGUI:
                      self.chapter_folder_naming_var, self.human_mode_var,
                      self.download_engine_var, self.fast_thread_var, self.yumanhua_batch_var,
                      self.collect_mode_var,
+                     self.skip_done_var, self.zip_per_chapter_var, self.cbz_mode_var,
+                     self.auto_export_var, self.follow_enabled_var, self.follow_interval_var,
                      self.proxy_enabled_var, self.proxy_file_var, self.proxy_url_var,
                      self.proxy_source_var, self.proxy_browser_var,
                      self.proxy_allow_direct_var):
@@ -461,7 +530,7 @@ class GenericComicDownloaderGUI:
         self.confirm_button = ttk.Button(
             self.button_frame,
             text="开始下载",
-            command=self.start_download,
+            command=self.on_main_button,
             style="Accent.TButton"
         )
         self.confirm_button.pack(side=tk.RIGHT, padx=3)
@@ -476,6 +545,8 @@ class GenericComicDownloaderGUI:
         self.chapter_load_btn.pack(side=tk.LEFT)
         ttk.Button(ct_tools, text="全选", command=self.chapter_select_all, width=6).pack(side=tk.LEFT, padx=3)
         ttk.Button(ct_tools, text="全不选", command=self.chapter_select_none, width=6).pack(side=tk.LEFT, padx=3)
+        self.chapter_force_refresh_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ct_tools, text="强制刷新", variable=self.chapter_force_refresh_var).pack(side=tk.LEFT, padx=(6, 0))
         self.chapter_table_info_var = tk.StringVar(value="未加载。先填漫画名称，点“加载章节表”可勾选具体章节")
         ttk.Label(ct_tools, textvariable=self.chapter_table_info_var, font=("微软雅黑", 9), foreground="gray").pack(side=tk.LEFT, padx=8)
 
@@ -756,6 +827,45 @@ class GenericComicDownloaderGUI:
             font=("微软雅黑", 9), foreground="gray"
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        # 测试版功能：章节断点续传 + 按章节打包
+        extra_row = ttk.Frame(dl_frame)
+        extra_row.grid(row=6, column=0, columnspan=2, sticky='w', padx=4, pady=(6, 2))
+        ttk.Checkbutton(
+            extra_row, text="跳过已下载章节（断点续传）", variable=self.skip_done_var,
+            command=self._apply_skip_done
+        ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            extra_row, text="按章节打包 zip", variable=self.zip_per_chapter_var,
+            command=self._apply_zip_per_chapter
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            extra_row, text="按章生成 CBZ（阅读器兼容）", variable=self.cbz_mode_var,
+            command=self._apply_cbz_mode
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(
+            extra_row, text="跳过：download_state.json 记录已完成章节，重跑只补缺章；按章 zip：每章生成同名压缩包",
+            font=("微软雅黑", 9), foreground="gray"
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # v1.7.3：下载完成后自动导出 + 追更
+        export_row = ttk.Frame(dl_frame)
+        export_row.grid(row=7, column=0, columnspan=2, sticky='w', padx=4, pady=(6, 2))
+        ttk.Label(export_row, text="下载完成后自动导出:").pack(side=tk.LEFT)
+        ttk.Combobox(
+            export_row, textvariable=self.auto_export_var, width=8, state='readonly',
+            values=['不导出', 'PDF', 'EPUB', 'CBZ', 'MOBI']
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Checkbutton(
+            export_row, text="自动追更（定时只补新章）", variable=self.follow_enabled_var,
+            command=self._on_follow_toggle
+        ).pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Label(export_row, text="间隔(分钟):").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Entry(export_row, textvariable=self.follow_interval_var, width=4).pack(side=tk.LEFT)
+        ttk.Label(
+            dl_frame, text="导出复用“格式转换”模块；追更会自动开启“跳过已下载章节”，只补新章",
+            font=("微软雅黑", 9), foreground="gray"
+        ).grid(row=8, column=0, columnspan=2, sticky='w', padx=8, pady=(0, 2))
+
         # ---- 浏览器设置 ----
         browser_frame = ttk.LabelFrame(self.page_settings_inner, text="浏览器设置", style="Card.TLabelframe")
         browser_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(6, 12))
@@ -864,6 +974,12 @@ class GenericComicDownloaderGUI:
                 'fast_thread_sites': list(self.fast_site_list or []),
                 'yumanhua_batch_limit': bool(self.yumanhua_batch_var.get()),
                 'collect_mode': str(self.collect_mode_var.get() or 'batch'),
+                'skip_done_chapters': bool(self.skip_done_var.get()),
+                'zip_per_chapter': bool(self.zip_per_chapter_var.get()),
+                'cbz_mode': bool(self.cbz_mode_var.get()),
+                'auto_export': str(self.auto_export_var.get() or '不导出'),
+                'follow_enabled': bool(self.follow_enabled_var.get()),
+                'follow_interval_min': self.follow_interval_var.get().strip() or '10',
                 'image_name_padding': self.image_name_padding_var.get(),
                 'chapter_folder_naming': self.chapter_folder_naming_var.get(),
                 'window_size': self.window_size_var.get(),
@@ -948,6 +1064,22 @@ class GenericComicDownloaderGUI:
             mode = str(config.get('collect_mode') or 'batch')
             self.collect_mode_var.set('stream' if mode == 'stream' else 'batch')
         self._apply_collect_mode()
+        # 测试版：跳过已下载章节 / 按章节打包
+        if 'skip_done_chapters' in config:
+            self.skip_done_var.set(bool(config.get('skip_done_chapters')))
+        if 'zip_per_chapter' in config:
+            self.zip_per_chapter_var.set(bool(config.get('zip_per_chapter')))
+        if 'cbz_mode' in config:
+            self.cbz_mode_var.set(bool(config.get('cbz_mode')))
+        if config.get('auto_export') in ('不导出', 'PDF', 'EPUB', 'CBZ', 'MOBI'):
+            self.auto_export_var.set(config['auto_export'])
+        if 'follow_enabled' in config:
+            self.follow_enabled_var.set(bool(config.get('follow_enabled')))
+        if config.get('follow_interval_min'):
+            self.follow_interval_var.set(str(config.get('follow_interval_min')))
+        self._apply_skip_done()
+        self._apply_zip_per_chapter()
+        self._apply_cbz_mode()
         # 无论有没有存过，都把当前开关状态写进 config.HUMAN_MODE（缺省开启）
         self._apply_human_mode()
         self._apply_download_engine()
@@ -1032,6 +1164,10 @@ class GenericComicDownloaderGUI:
 
     def on_app_close(self):
         """关闭窗口：先释放禁止休眠，再保存配置退出"""
+        try:
+            stop_control.request_stop()
+        except Exception:
+            pass
         try:
             if getattr(self, '_sleep_block_active', False):
                 self._apply_prevent_sleep(False)
@@ -1331,6 +1467,113 @@ class GenericComicDownloaderGUI:
             self.append_status("采集模式：边采集边下载（采集完一章立即下载这一章，再继续下一章）")
         else:
             self.append_status("采集模式：先采集全部章节图片链接，再统一下载（原逻辑）")
+
+    def _apply_cbz_mode(self):
+        """把『按章生成 CBZ』写进 config.CBZ_MODE"""
+        try:
+            import config as app_config
+            enabled = bool(self.cbz_mode_var.get())
+            app_config.CBZ_MODE = enabled
+            return enabled
+        except Exception as e:
+            print(f"应用 CBZ 模式失败: {e}")
+            return None
+
+    def _on_follow_toggle(self):
+        """追更开关：关闭时取消已排队的检查；开启时强制打开断点续传"""
+        self.save_config()
+        if not self.follow_enabled_var.get():
+            if self._follow_job:
+                try:
+                    self.root.after_cancel(self._follow_job)
+                except Exception:
+                    pass
+                self._follow_job = None
+            self.append_status("追更：已关闭")
+            return
+        if not self.skip_done_var.get():
+            self.skip_done_var.set(True)
+            self._apply_skip_done()
+            self.append_status("追更：已自动开启“跳过已下载章节”，保证只补新章")
+        self.append_status("追更：已开启，下载完成后按设定间隔自动检查新章节")
+
+    def _schedule_follow(self):
+        """安排下一次追更检查（分钟）"""
+        if not self.follow_enabled_var.get():
+            return
+        # 追更必须配合断点续传，否则每轮都会整本重下
+        if not self.skip_done_var.get():
+            self.skip_done_var.set(True)
+            self._apply_skip_done()
+        try:
+            minutes = max(1, int(str(self.follow_interval_var.get()).strip() or '10'))
+        except ValueError:
+            minutes = 10
+        if self._follow_job:
+            try:
+                self.root.after_cancel(self._follow_job)
+            except Exception:
+                pass
+        self._follow_job = self.root.after(minutes * 60 * 1000, self._follow_tick)
+        self.append_status(f"追更：{minutes} 分钟后自动检查新章节（取消勾选可停止）")
+
+    def _follow_tick(self):
+        self._follow_job = None
+        if not self.follow_enabled_var.get():
+            return
+        try:
+            running = bool(self._download_running)
+        except Exception:
+            running = False
+        if running:
+            # 上一轮还在下载，60 秒后再试
+            self._follow_job = self.root.after(60 * 1000, self._follow_tick)
+            return
+        self.append_status("追更：开始检查新章节…")
+        self.start_download()
+
+    def _auto_export_after_download(self, comic_name, download_path):
+        """下载完成后按设置自动导出整本（复用格式转换模块）"""
+        fmt = str(self.auto_export_var.get() or '不导出').strip()
+        if fmt == '不导出' or not comic_name:
+            return
+        try:
+            from downloader import comic_folder_name
+            from converter import convert_comic_folder
+            root = os.path.join(download_path if download_path else '.',
+                                comic_folder_name(comic_name))
+            if not os.path.isdir(root):
+                self.append_status(f"自动导出跳过：找不到目录 {root}")
+                return
+            self.append_status(f"自动导出：开始转换 {fmt}（整本）")
+            ok, fails = convert_comic_folder(
+                root, fmt.upper(), download_path if download_path else '.',
+                per_chapter=False, log=self.append_status)
+            self.append_status(f"自动导出完成：成功 {ok}，失败 {len(fails)}")
+        except Exception as e:
+            self.append_status(f"自动导出失败：{e}")
+
+    def _apply_skip_done(self):
+        """把『跳过已下载章节』写进 config.SKIP_DONE_CHAPTERS"""
+        try:
+            import config as app_config
+            enabled = bool(self.skip_done_var.get())
+            app_config.SKIP_DONE_CHAPTERS = enabled
+            return enabled
+        except Exception as e:
+            print(f"应用跳过已下载章节失败: {e}")
+            return None
+
+    def _apply_zip_per_chapter(self):
+        """把『按章节打包 zip』写进 config.ZIP_PER_CHAPTER"""
+        try:
+            import config as app_config
+            enabled = bool(self.zip_per_chapter_var.get())
+            app_config.ZIP_PER_CHAPTER = enabled
+            return enabled
+        except Exception as e:
+            print(f"应用按章节打包失败: {e}")
+            return None
 
     def on_choose_fast_sites(self):
         """弹出『高速下载网站』多选框（只对勾选的站点生效）"""
@@ -1807,9 +2050,23 @@ class GenericComicDownloaderGUI:
         login_mode = self.login_var.get() and site_name in self.sites_requiring_login
         cookies_dir = self.cookies_path_var.get().strip() or DEFAULT_COOKIES_DIR
 
+        # 章节表缓存：有效期内直接读缓存，不打开浏览器（勾选“强制刷新”可跳过）
+        cache_path = _chapter_cache_path(site_name, comic_id or comic_name)
+        import config as _cfg
+        cache_hours = float(getattr(_cfg, 'CHAPTER_CACHE_HOURS', 12) or 12)
+        if not self.chapter_force_refresh_var.get():
+            cached = _load_chapter_cache(cache_path, cache_hours)
+            if cached:
+                total, titles, age = cached
+                self._populate_chapter_list(total, titles)
+                self.chapter_table_info_var.set(
+                    f"已从缓存加载 {total} 章（缓存 {int(age // 60)} 分钟前，勾“强制刷新”可重爬）")
+                self.append_status(f"章节表缓存命中：{total} 章，未打开浏览器")
+                return
+        self.append_status(f"缓存未命中或已过期，正在打开漫画读取章节表：{comic_name or comic_id}")
+
         self._loading_chapter_table = True
         self.chapter_load_btn.config(state=tk.DISABLED)
-        self.append_status(f"正在打开漫画读取章节表: {comic_name or comic_id}")
 
         def task():
             crawler = None
@@ -1832,6 +2089,7 @@ class GenericComicDownloaderGUI:
                         titles = {int(c.get('num', 0)): c.get('title', '') for c in chs if c.get('title')}
                 except Exception:
                     titles = None
+                _save_chapter_cache(cache_path, site_name, comic_id or comic_name, total, titles)
                 self.root.after(0, lambda t=total, ts=titles: self._populate_chapter_list(t, ts))
             except Exception as e:
                 err_msg = f"加载章节表失败: {e}"
@@ -1885,6 +2143,18 @@ class GenericComicDownloaderGUI:
             if chapter_end > 0 and chapter_end < chapter_start:
                 messagebox.showerror("错误", "结束章节必须大于等于起始章节")
                 return
+
+            chapter_expr = (self.chapter_expr_var.get() or '').strip()
+            expr_numbers = None
+            if chapter_expr:
+                try:
+                    expr_numbers = parse_chapter_expression(chapter_expr)
+                except ValueError as e:
+                    messagebox.showerror("错误", f"章节表达式有误：{e}")
+                    return
+                if expr_numbers:
+                    self.append_status(
+                        f"章节表达式：{chapter_expr}（共 {len(expr_numbers)} 章）")
             
             browser_type = self.browser_type_var.get()
             browser_path = self.browser_path_var.get().strip()
@@ -1899,8 +2169,10 @@ class GenericComicDownloaderGUI:
             self._apply_fast_thread()
             self._apply_yumanhua_batch()
             self._apply_collect_mode()
+            self._apply_skip_done()
+            self._apply_zip_per_chapter()
+            self._apply_cbz_mode()
             self._apply_download_logic()
-            self.confirm_button.config(state=tk.DISABLED)
             self.append_status(f"使用站点: {site_name}")
             if comic_id:
                 self.append_status(f"使用漫画ID: {comic_id}")
@@ -1917,6 +2189,8 @@ class GenericComicDownloaderGUI:
             
             self.append_status("正在启动浏览器...")
             crawler = ComicCrawler(site_name, browser_path, headless, login_mode=login_mode, cookies_dir=cookies_dir)
+            self._active_crawler = crawler
+            export_request = None
                         
             try:
                 max_threads = int(self.thread_var.get().strip())
@@ -1967,7 +2241,10 @@ class GenericComicDownloaderGUI:
                     chapter_folder_naming=chapter_folder_naming,
                 )
                 selected = self._get_selected_chapters() if self._chapter_loaded_total > 0 else []
-                if selected:
+                if expr_numbers:
+                    self.append_status(f"使用章节表达式：{len(expr_numbers)} 章，按表达式下载")
+                    result = run_download_flow_selected(selected_numbers=expr_numbers, **_common)
+                elif selected:
                     self.append_status(f"使用章节表：勾选了 {len(selected)} 章，按勾选章节下载")
                     result = run_download_flow_selected(selected_numbers=selected, **_common)
                 else:
@@ -1976,11 +2253,16 @@ class GenericComicDownloaderGUI:
                     result = run_download_flow(
                         chapter_start=chapter_start, chapter_end=chapter_end, **_common)
             
+                if stop_control.is_stopped():
+                    self.append_status("已停止下载（已下载完成的图片和章节会保留）")
+                    return
+
                 comic_name = result['comic_name']
                 failed_downloads = result['failed_downloads']
             
                 if not result['chapters_data']:
                     self.append_status("没有获取到任何章节数据")
+                    self._schedule_follow()
                 elif failed_downloads:
                     self.append_status(f"\n⚠️  注意：以下图片最终下载失败（共 {len(failed_downloads)} 张）:")
                     for failed in failed_downloads:
@@ -1990,31 +2272,92 @@ class GenericComicDownloaderGUI:
                     self.append_status(f"\n失败列表已保存到: {result['failed_json_path']}")
                     self.append_status("⚠️  由于存在下载失败的图片，跳过压缩步骤")
                     self.append_status(f"✓ 漫画《{comic_name}》下载完成（有失败图片）！")
-                    messagebox.showwarning("完成", f"漫画《{comic_name}》下载完成！\n\n注意：有 {len(failed_downloads)} 张图片最终下载失败。\n失败列表已保存到:\n{result['failed_json_path']}\n\n请使用'下载失败图片'功能重新下载。")
+                    if self.follow_enabled_var.get():
+                        self.append_status("追更：本轮有失败图片，已跳过自动导出")
+                        self._schedule_follow()
+                    else:
+                        messagebox.showwarning("完成", f"漫画《{comic_name}》下载完成！\n\n注意：有 {len(failed_downloads)} 张图片最终下载失败。\n失败列表已保存到:\n{result['failed_json_path']}\n\n请使用'下载失败图片'功能重新下载。")
                 else:
                     self.append_status(f"✓ 漫画《{comic_name}》下载完成！")
                     if create_zip:
                         self.append_status(f"已生成压缩包: {os.path.join(download_path if download_path else '.', comic_name + '.zip')}")
                     else:
                         self.append_status("未生成压缩包（如需生成请勾选'下载完成后生成压缩包'）")
-                    messagebox.showinfo("成功", f"漫画《{comic_name}》下载完成！")
+                    if result['chapters_data']:
+                        export_request = (comic_name, download_path)
+                    if self.follow_enabled_var.get():
+                        self.append_status("追更：本轮完成，等待下次检查")
+                        self._schedule_follow()
+                    else:
+                        messagebox.showinfo("成功", f"漫画《{comic_name}》下载完成！")
                             
             finally:
+                self._active_crawler = None
                 if crawler.page:
-                    crawler.page.quit()
-                    self.append_status("浏览器已关闭")
+                    try:
+                        crawler.page.quit()
+                        self.append_status("浏览器已关闭")
+                    except Exception:
+                        pass
                 else:
                     self.append_status("该站点无需浏览器（纯HTTP下载）")
+                if export_request:
+                    self._auto_export_after_download(*export_request)
                 
+        except stop_control.DownloadCancelled:
+            self.append_status("已停止下载（已下载完成的图片和章节会保留）")
         except Exception as e:
+            if stop_control.is_stopped():
+                self.append_status("已停止下载（已下载完成的图片和章节会保留）")
+                return
             self.append_status(f"下载过程中出错: {e}")
             import traceback
             self.append_status(traceback.format_exc())
-            messagebox.showerror("错误", f"下载过程中出错: {e}")
+            if self.follow_enabled_var.get():
+                self.append_status("追更：本轮出错，稍后继续检查")
+                self._schedule_follow()
+            else:
+                messagebox.showerror("错误", f"下载过程中出错: {e}")
         finally:
-            self.confirm_button.config(state=tk.NORMAL)
+            self._download_running = False
+            self._stopping = False
+            try:
+                self.root.after(0, lambda: self.confirm_button.config(
+                    text="开始下载", state=tk.NORMAL))
+            except Exception:
+                pass
     
+    def on_main_button(self):
+        """主按钮：未下载时开始；下载中变成“停止下载”，再点就请求停止。"""
+        if self._download_running:
+            if self._stopping:
+                return
+            self._stopping = True
+            stop_control.request_stop()
+            self.confirm_button.config(text="正在停止…", state=tk.DISABLED)
+            self.append_status("正在停止下载：当前图片结束后退出，已下载文件保留")
+            threading.Thread(target=self._stop_active_browser, daemon=True).start()
+            return
+        self.start_download()
+
+    def _stop_active_browser(self):
+        """停止时先关掉下载用浏览器，打断正在进行的搜索/翻页。"""
+        crawler = self._active_crawler
+        if crawler is None:
+            return
+        try:
+            if crawler.page:
+                crawler.page.quit()
+        except Exception:
+            pass
+
     def start_download(self):
+        if self._download_running:
+            return
+        stop_control.clear()
+        self._download_running = True
+        self._stopping = False
+        self.confirm_button.config(text="停止下载", state=tk.NORMAL)
         download_thread = threading.Thread(target=self.download_task)
         download_thread.daemon = True
         download_thread.start()
@@ -2030,6 +2373,7 @@ class GenericComicDownloaderGUI:
 
         def retry_task():
             try:
+                stop_control.clear()
                 self.confirm_button.config(state=tk.DISABLED)
                 self.append_status(f"\n{'='*50}")
                 self.append_status("开始下载失败图片...")
@@ -3062,3 +3406,5 @@ class SiteAdapterDialog:
         if self.on_save:
             self.on_save(adapter)
         self.win.destroy()
+
+

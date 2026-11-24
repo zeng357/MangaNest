@@ -7,6 +7,11 @@ from urllib.parse import quote
 
 from utils import is_normal_url
 
+# 2026-11 站点更新后 /wp-json/wp/v2/search 被 Cloudflare 统一 403；
+# 记住失败状态，冷却期内直接走整页搜索，避免每次搜索白等 30 秒以上。
+_REST_BLOCKED_UNTIL = 0.0
+_REST_COOLDOWN_SECONDS = 1800
+
 
 class MgreadCrawler:
     """Mgread.io (mgread.io) 爬虫 —— 2026-11 实测解析
@@ -249,12 +254,16 @@ class MgreadCrawler:
         只接受 subtype='manga' 且 url 形如 /manga/{slug}/。
         """
         from urllib.parse import quote as _q
+        global _REST_BLOCKED_UNTIL
+        if time.time() < _REST_BLOCKED_UNTIL:
+            raise Exception('REST 搜索接口处于冷却期（站点更新后返回 403），直接走整页搜索')
         api = (f"https://mgread.io/wp-json/wp/v2/search?search={_q(keyword)}"
                f"&per_page={per_page}&subtype=any")
         raw = self._rest_fetch_aiohttp(api)
         if not raw:
             raw = self._rest_fetch_browser(api)
         if not raw:
+            _REST_BLOCKED_UNTIL = time.time() + _REST_COOLDOWN_SECONDS
             raise Exception('REST 搜索无响应（aiohttp 与浏览器 fetch 均失败）')
         try:
             data = json.loads(raw)
@@ -283,13 +292,17 @@ class MgreadCrawler:
         return results
 
     @staticmethod
-    def _rest_fetch_aiohttp(api_url, retries=3):
-        """aiohttp 直连 REST（主域只能走 aiohttp，requests 会被 TLS 重置）。"""
+    def _rest_fetch_aiohttp(api_url, retries=1):
+        """aiohttp 直连 REST（主域只能走 aiohttp，requests 会被 TLS 重置）。
+
+        2026-11 站点更新后接口返回 403，重试没有意义：只试 1 次、4 秒超时，
+        失败即回退整页搜索。
+        """
         import asyncio
         import aiohttp
 
         async def _run():
-            timeout = aiohttp.ClientTimeout(total=12)
+            timeout = aiohttp.ClientTimeout(total=4)
             async with aiohttp.ClientSession(timeout=timeout) as s:
                 async with s.get(api_url, headers={
                     'User-Agent': 'Mozilla/5.0',
@@ -297,6 +310,7 @@ class MgreadCrawler:
                     'Accept': 'application/json',
                 }) as r:
                     if r.status != 200:
+                        print(f"REST(aiohttp) HTTP {r.status}，接口不可用")
                         return ''
                     return await r.text()
 
@@ -305,7 +319,7 @@ class MgreadCrawler:
                 return asyncio.run(_run())
             except Exception as e:
                 print(f"REST(aiohttp) 第{attempt + 1}次失败: {e}")
-                time.sleep(0.6)
+                time.sleep(0.3)
         return ''
 
     def _rest_fetch_browser(self, api_url):
@@ -616,6 +630,13 @@ class MgreadCrawler:
 
             # 本页无新章节：翻页结束
             if new_count == 0:
+                break
+
+            # 2026-11 站点更新后，超出范围的章节分页不再返回 404/空列表，
+            # 而是返回 Cloudflare 挑战页；继续请求下一页会触发 8 次刷新重试（约 3 分钟）。
+            # 本站每页固定约 24 条，遇到不足 20 条的短页即可判定为最后一页。
+            if len(raw) < 20:
+                print(f"章节第{page_no}页仅 {len(raw)} 条（不足整页），视为最后一页")
                 break
 
         ordered = [by_key[k] for k in sorted(by_key)]
