@@ -143,6 +143,8 @@ def _finalize_chapter_packages(comic_name, download_path, all_chapters_data,
         missing = False
         for name in os.listdir(folder):
             chapter_dir = os.path.join(folder, name)
+            if str(name) == '0':
+                continue  # 封面目录不参与按章打包
             if not os.path.isdir(chapter_dir):
                 continue
             has_image = False

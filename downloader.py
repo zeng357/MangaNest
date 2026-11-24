@@ -561,6 +561,9 @@ def zip_each_chapter(comic_dir, comic_name=None, chapter_titles=None):
         chapter_dir = os.path.join(comic_dir, name)
         if not os.path.isdir(chapter_dir):
             continue
+        # 0/ 是封面目录，不是章节；不要把 cover.jpg 打成 0.zip / 0.cbz
+        if str(name) == '0':
+            continue
         ext = '.cbz' if as_cbz else '.zip'
         zip_path = os.path.join(comic_dir, f"{name}{ext}")
         try:

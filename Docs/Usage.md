@@ -1,6 +1,6 @@
 # MangaNest · Usage Guide
 
-MangaNest · Multi-Site Manga Downloader — full user guide (chapter-list edition, v1.7.3).
+MangaNest · Multi-Site Manga Downloader — full user guide (chapter-list edition, v1.7.4).
 
 ## Contents
 
@@ -68,6 +68,14 @@ ComicName/
 - **What is kept**: every image and chapter already downloaded, the chapter list, and `image_urls.json`. The run is not rolled back.
 - **How to continue**: use **下载失败图片** (retry failed images) or start the same chapter again. The next run reuses the saved image list and skips files that already exist.
 - **Chapter packages**: ZIP/CBZ and `download_state.json` are written only for chapters that actually finished; a stopped chapter is left without a package mark so it can be resumed.
+
+### 2.5 Page scrolling (all pages)
+
+- Every page — **主页 / 格式转换 / 汉化 / 设置** — has a vertical scrollbar on the right.
+- Mouse wheel scrolls the current page when the pointer is over normal controls (labels, inputs, cards).
+- The **chapter table** scrolls independently: wheeling over a chapter checkbox scrolls the chapter list, not the whole page.
+- On a small window, scroll to the bottom to reach the download-status log, the settings save buttons, or the conversion log.
+- Switching pages resets that page to the top.
 
 ---
 

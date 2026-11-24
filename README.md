@@ -4,6 +4,13 @@
 
 A manga downloader that runs on Windows and supports multiple manga websites: built-in crawlers + custom site adapters (JSON rules) + an Auto Site Analyzer wizard — paste any new website, the program automatically analyzes its search/chapter/image structure and generates a reusable adapter.
 
+**v1.7.4 — scrollable pages, mint-green UI refresh, cover-package fix**
+- **All four pages scroll**: 主页 / 格式转换 / 汉化 / 设置 each has its own right-side scrollbar and mouse-wheel support. On a small screen, every hidden bottom control can now be reached by scrolling.
+- **Independent nested scrolling**: the chapter table keeps its own wheel scroll, so wheeling over a chapter checkbox no longer moves the whole page. Log boxes and list boxes keep their native scroll behaviour.
+- **UI refresh**: the main window uses the mint-green theme with grouped cards; page switches reset each page to the top.
+- **Cover packaging fixed**: `0/` is the cover directory, not a chapter. Per-chapter ZIP/CBZ now skips it, so no stray `0.zip` / `0.cbz` is produced.
+- Tests: `ALL_PAGES_SCROLL_PASS`, `WHEEL_TEST_PASS`, `GUI_V173_SELFCHECK_PASS`, `PY_COMPILE_ALL_PASS`, `COVER_NOT_ZIPPED_PASS`.
+
 **v1.7.3 — test build merged into the formal build; stop button; Mgread update**
 - **One build from now on**: the merged formal build is the only maintained version. The test build is archived as a source ZIP.
 - **Start / Stop toggle**: the main button reads **开始下载** when idle. After it is clicked it becomes **停止下载**; clicking it again shows **正在停止…**, stops the current run and closes the download browser. The stop is checked before the next search, chapter collection, image request, retry, chapter package or final packaging step, so it usually takes effect within one image.
