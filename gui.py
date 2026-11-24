@@ -550,12 +550,32 @@ class GenericComicDownloaderGUI:
         self.style.configure("Card.TLabelframe", padding="12")
         self.style.configure("Card.TLabelframe.Label", font=("微软雅黑", 10, "bold"))
 
-        # ========== 设置页面 ==========
+        # ========== 设置页面（可滚动：内容高于窗口时用滚轮/滚动条） ==========
         self.page_settings = ttk.Frame(self.main_frame)
-        self.page_settings.columnconfigure(0, weight=1)
+        self.settings_canvas = tk.Canvas(self.page_settings, highlightthickness=0, borderwidth=0)
+        self.settings_scrollbar = ttk.Scrollbar(
+            self.page_settings, orient='vertical', command=self.settings_canvas.yview
+        )
+        self.settings_canvas.configure(yscrollcommand=self.settings_scrollbar.set)
+        self.settings_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.settings_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.page_settings_inner = ttk.Frame(self.settings_canvas)
+        self._settings_window = self.settings_canvas.create_window(
+            (0, 0), window=self.page_settings_inner, anchor='nw'
+        )
+        self.page_settings_inner.columnconfigure(0, weight=1)
+        self.page_settings_inner.bind(
+            '<Configure>',
+            lambda e: self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox('all'))
+        )
+        self.settings_canvas.bind(
+            '<Configure>',
+            lambda e: self.settings_canvas.itemconfigure(self._settings_window, width=e.width)
+        )
+        self.root.bind_all('<MouseWheel>', self._on_settings_mousewheel, add='+')
 
         # ---- 图片设置 ----
-        img_frame = ttk.LabelFrame(self.page_settings, text="图片设置", style="Card.TLabelframe")
+        img_frame = ttk.LabelFrame(self.page_settings_inner, text="图片设置", style="Card.TLabelframe")
         img_frame.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 6))
         img_frame.columnconfigure(1, weight=1)
         ttk.Label(img_frame, text="图片命名:").grid(row=0, column=0, sticky='e', padx=(0, 10), pady=4)
@@ -585,7 +605,7 @@ class GenericComicDownloaderGUI:
                   font=("微软雅黑", 9), foreground="gray").grid(row=3, column=1, sticky='w')
 
         # ---- 窗口设置 ----
-        window_frame = ttk.LabelFrame(self.page_settings, text="窗口设置", style="Card.TLabelframe")
+        window_frame = ttk.LabelFrame(self.page_settings_inner, text="窗口设置", style="Card.TLabelframe")
         window_frame.grid(row=1, column=0, sticky='ew', padx=12, pady=6)
         window_frame.columnconfigure(1, weight=1)
 
@@ -602,7 +622,7 @@ class GenericComicDownloaderGUI:
                   font=("微软雅黑", 9), foreground="gray").grid(row=1, column=1, sticky='w')
 
         # ---- 下载设置 ----
-        dl_frame = ttk.LabelFrame(self.page_settings, text="下载设置", style="Card.TLabelframe")
+        dl_frame = ttk.LabelFrame(self.page_settings_inner, text="下载设置", style="Card.TLabelframe")
         dl_frame.grid(row=2, column=0, sticky='ew', padx=12, pady=6)
         dl_frame.columnconfigure(0, weight=1)
         dl_frame.columnconfigure(1, weight=1)
@@ -737,7 +757,7 @@ class GenericComicDownloaderGUI:
         ).pack(side=tk.LEFT, padx=(8, 0))
 
         # ---- 浏览器设置 ----
-        browser_frame = ttk.LabelFrame(self.page_settings, text="浏览器设置", style="Card.TLabelframe")
+        browser_frame = ttk.LabelFrame(self.page_settings_inner, text="浏览器设置", style="Card.TLabelframe")
         browser_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(6, 12))
         browser_frame.columnconfigure(1, weight=1)
 
@@ -761,7 +781,7 @@ class GenericComicDownloaderGUI:
         ttk.Button(path_row, text="浏览", command=self.browse_browser, width=6).grid(row=0, column=1)
 
         # ---- 代理设置 ----
-        proxy_frame = ttk.LabelFrame(self.page_settings, text="代理设置（下载与浏览器全部走代理出口）", style="Card.TLabelframe")
+        proxy_frame = ttk.LabelFrame(self.page_settings_inner, text="代理设置（下载与浏览器全部走代理出口）", style="Card.TLabelframe")
         proxy_frame.grid(row=4, column=0, sticky='ew', padx=12, pady=(6, 12))
         proxy_frame.columnconfigure(1, weight=1)
 
@@ -1458,6 +1478,22 @@ class GenericComicDownloaderGUI:
         ttk.Button(action_row, text="取消", width=10, command=_cancel).pack(side=tk.RIGHT, padx=(0, 8))
         _toggle_state()
         dialog.wait_window()
+
+    def _on_settings_mousewheel(self, event):
+        """设置页滚轮滚动：仅当指针位于设置页区域内才响应，避免影响章节列表"""
+        try:
+            if not self.page_settings.winfo_ismapped():
+                return
+            px, py = self.page_settings.winfo_pointerxy()
+            x, y = self.page_settings.winfo_rootx(), self.page_settings.winfo_rooty()
+            w, h = self.page_settings.winfo_width(), self.page_settings.winfo_height()
+            if not (x <= px <= x + w and y <= py <= y + h):
+                return
+            step = -3 if getattr(event, 'delta', 0) > 0 else 3
+            self.settings_canvas.yview_scroll(step, 'units')
+            return 'break'
+        except Exception:
+            pass
 
     def show_page(self, page_name):
         """左侧边栏页面切换：'main' 主页 / 'settings' 设置 / 'convert' 格式转换 / 'translate' 汉化"""

@@ -99,6 +99,7 @@ Turn downloaded manga images (JPG/PNG/WebP/GIF/BMP) into e-books: **PDF · CBZ �
 
 ## 4. Settings page
 
+- **Scrolling (v1.6.10)**: the settings page scrolls vertically — use the **mouse wheel** while the pointer is over the settings area, or drag the bar on the right edge. Previously the lower cards (下载设置 / 浏览器设置 / 代理设置) could be cut off on small windows with no way to reach them.
 - **Image naming**: padding (001, 002…), naming pattern.
 - **Chapter folder naming**: display style of chapter folders.
 - **Window / download / browser options**: fonts, timeouts, headless mode, etc.
