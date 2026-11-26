@@ -4,6 +4,13 @@
 
 A manga downloader that runs on Windows and supports multiple manga websites: built-in crawlers + custom site adapters (JSON rules) + an Auto Site Analyzer wizard — paste any new website, the program automatically analyzes its search/chapter/image structure and generates a reusable adapter.
 
+**v1.7.5 — readable download dialogs and chapter table**
+- **Download-site dialogs enlarged**: «多线程高速下载网站» and «模拟人工下载范围» now open at 700×560, are resizable (minimum 600×460), and use a 50×18 list that expands with the window. The old auto-sized windows were 469×372 and 291×397 and could not be resized, which made the scrollbar nearly unusable.
+- **Chapter table enlarged**: the chapter list canvas grew from a fixed 28 px to 200 px, so about 8 chapter rows are visible and the scrollbar has a usable thumb; mouse-wheel scrolling still works independently from the page.
+- **Other small read-only boxes**: the download-status log now requests 6 lines instead of 3, and the format-converter source list now shows 10 rows instead of 6.
+- **Dialog behaviour**: both dialogs are centred over the main window, list boxes support the mouse wheel, and the “共 N 个站点；列表可用滚轮或右侧滚动条，窗口可拖动边缘放大” hint is shown.
+- Tests: `DIALOG_700X560_PASS`, `CHAPTER_CANVAS_200_PASS`, `CHAPTER_SCROLL_RANGE_PASS`, `PY_COMPILE_BOTH_PASS`; verified with 30 sites and 30 chapters.
+
 **v1.7.4 — scrollable pages, mint-green UI refresh, cover-package fix**
 - **All four pages scroll**: 主页 / 格式转换 / 汉化 / 设置 each has its own right-side scrollbar and mouse-wheel support. On a small screen, every hidden bottom control can now be reached by scrolling.
 - **Independent nested scrolling**: the chapter table keeps its own wheel scroll, so wheeling over a chapter checkbox no longer moves the whole page. Log boxes and list boxes keep their native scroll behaviour.

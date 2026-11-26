@@ -77,6 +77,14 @@ ComicName/
 - On a small window, scroll to the bottom to reach the download-status log, the settings save buttons, or the conversion log.
 - Switching pages resets that page to the top.
 
+### 2.6 Download dialogs and list sizing
+
+- **多线程高速下载网站** and **模拟人工下载范围** open at **700×560** and can be resized from **600×460** upward. Drag the window edge if the list is still too short.
+- Both dialogs show a 50×18 site list with a visible scrollbar; the mouse wheel scrolls the list when the pointer is over it.
+- The **chapter table** shows about 8 chapters at once instead of a single line. Wheel over the chapter list to scroll it; the page itself does not move.
+- The **download-status log** shows about 6 lines, and the **format-converter source list** shows about 10 folders.
+- These sizes are initial values: resizing the dialog or enlarging the main window keeps the lists usable.
+
 ---
 
 ## 3. Format Converter page (merge manga into a book)
