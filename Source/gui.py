@@ -694,7 +694,7 @@ class GenericComicDownloaderGUI:
 
         ct_body = ttk.Frame(self.chapter_table_frame)
         ct_body.pack(fill=tk.X)
-        self.chapter_canvas = tk.Canvas(ct_body, height=28, bg=THEME_SURFACE, highlightthickness=0)
+        self.chapter_canvas = tk.Canvas(ct_body, height=200, bg=THEME_SURFACE, highlightthickness=0)
         self.chapter_scroll = ttk.Scrollbar(ct_body, orient="vertical", command=self.chapter_canvas.yview)
         self.chapter_list_frame = ttk.Frame(self.chapter_canvas)
         self.chapter_list_frame.bind(
@@ -772,7 +772,7 @@ class GenericComicDownloaderGUI:
             font=("微软雅黑", 10),
             wrap=tk.WORD,
             state=tk.DISABLED,
-            height=3,
+            height=6,
             bg=THEME_INPUT,
             fg=THEME_INK,
             relief=tk.FLAT,
@@ -1792,7 +1792,9 @@ class GenericComicDownloaderGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("多线程高速下载网站")
         dialog.transient(self.root)
-        dialog.resizable(False, False)
+        dialog.resizable(True, True)
+        dialog.geometry("700x560")
+        dialog.minsize(600, 460)
         try:
             dialog.grab_set()
         except Exception:
@@ -1805,12 +1807,24 @@ class GenericComicDownloaderGUI:
 
         list_frame = ttk.Frame(dialog)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(2, 6))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        site_box = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, width=34, height=12,
-                              yscrollcommand=scrollbar.set, exportselection=False)
+        site_box = tk.Listbox(
+            list_frame, selectmode=tk.MULTIPLE, width=50, height=18,
+            yscrollcommand=scrollbar.set, exportselection=False,
+            font=("微软雅黑", 9), activestyle='none'
+        )
         scrollbar.config(command=site_box.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        site_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        site_box.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+
+        def _on_mousewheel(event):
+            step = -1 if event.delta > 0 else 1
+            site_box.yview_scroll(step * 3, 'units')
+            return 'break'
+        site_box.bind('<MouseWheel>', _on_mousewheel)
+        dialog.bind('<MouseWheel>', _on_mousewheel)
 
         names = list(getattr(self, 'available_sites', []) or [])
         for n in names:
@@ -1818,6 +1832,12 @@ class GenericComicDownloaderGUI:
         for i, n in enumerate(names):
             if n in (self.fast_site_list or []):
                 site_box.selection_set(i)
+
+        ttk.Label(
+            dialog,
+            text="共 %d 个站点；列表可用滚轮或右侧滚动条，窗口可拖动边缘放大。" % len(names),
+            font=("微软雅黑", 8), foreground=THEME_MUTED
+        ).pack(anchor='w', padx=16)
 
         btn_row = ttk.Frame(dialog)
         btn_row.pack(fill=tk.X, padx=16, pady=(0, 4))
@@ -1843,6 +1863,14 @@ class GenericComicDownloaderGUI:
         action_row.pack(fill=tk.X, padx=16, pady=(4, 12))
         ttk.Button(action_row, text="确定", width=10, command=_confirm).pack(side=tk.RIGHT)
         ttk.Button(action_row, text="取消", width=10, command=dialog.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+        def _center():
+            dialog.update_idletasks()
+            w, h = 700, 560
+            x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - w) // 2)
+            y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - h) // 2)
+            dialog.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        dialog.after(10, _center)
         dialog.wait_window()
 
     def on_choose_human_sites(self):
@@ -1850,7 +1878,9 @@ class GenericComicDownloaderGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("模拟人工下载范围")
         dialog.transient(self.root)
-        dialog.resizable(False, False)
+        dialog.resizable(True, True)
+        dialog.geometry("700x560")
+        dialog.minsize(600, 460)
         try:
             dialog.grab_set()
         except Exception:
@@ -1867,12 +1897,26 @@ class GenericComicDownloaderGUI:
 
         list_frame = ttk.Frame(dialog)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(2, 6))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        site_box = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, width=34, height=12,
-                              yscrollcommand=scrollbar.set, exportselection=False)
+        site_box = tk.Listbox(
+            list_frame, selectmode=tk.MULTIPLE, width=50, height=18,
+            yscrollcommand=scrollbar.set, exportselection=False,
+            font=("微软雅黑", 9), activestyle='none'
+        )
         scrollbar.config(command=site_box.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        site_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        site_box.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+
+        def _on_mousewheel(event):
+            if str(site_box.cget('state')) == 'disabled':
+                return 'break'
+            step = -1 if event.delta > 0 else 1
+            site_box.yview_scroll(step * 3, 'units')
+            return 'break'
+        site_box.bind('<MouseWheel>', _on_mousewheel)
+        dialog.bind('<MouseWheel>', _on_mousewheel)
 
         names = list(getattr(self, 'available_sites', []) or [])
         for n in names:
@@ -1880,6 +1924,12 @@ class GenericComicDownloaderGUI:
         for i, n in enumerate(names):
             if n in (self.human_site_list or []):
                 site_box.selection_set(i)
+
+        ttk.Label(
+            dialog,
+            text="共 %d 个站点；列表可用滚轮或右侧滚动条，窗口可拖动边缘放大。" % len(names),
+            font=("微软雅黑", 8), foreground=THEME_MUTED
+        ).pack(anchor='w', padx=16)
 
         def _select_all():
             site_box.selection_set(0, tk.END)
@@ -1932,6 +1982,14 @@ class GenericComicDownloaderGUI:
         ttk.Button(action_row, text="确定", width=10, command=_confirm).pack(side=tk.RIGHT)
         ttk.Button(action_row, text="取消", width=10, command=_cancel).pack(side=tk.RIGHT, padx=(0, 8))
         _toggle_state()
+
+        def _center():
+            dialog.update_idletasks()
+            w, h = 700, 560
+            x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - w) // 2)
+            y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - h) // 2)
+            dialog.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        dialog.after(10, _center)
         dialog.wait_window()
 
     def _make_scroll_page(self, page_name, master=None):
@@ -3116,7 +3174,7 @@ class GenericComicDownloaderGUI:
         self.conv_list_frame.grid(row=1, column=0, sticky='ew', pady=2)
         self.conv_list_frame.columnconfigure(0, weight=1)
 
-        self.conv_listbox = tk.Listbox(self.conv_list_frame, height=6, selectmode=tk.EXTENDED, font=("微软雅黑", 9))
+        self.conv_listbox = tk.Listbox(self.conv_list_frame, height=10, selectmode=tk.EXTENDED, font=("微软雅黑", 9))
         self.conv_listbox.grid(row=0, column=0, sticky='ew')
         conv_scroll = ttk.Scrollbar(self.conv_list_frame, command=self.conv_listbox.yview)
         conv_scroll.grid(row=0, column=1, sticky='ns')

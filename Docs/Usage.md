@@ -19,12 +19,12 @@ MangaNest · Multi-Site Manga Downloader — full user guide (chapter-list editi
 
 ## 1. Quick start
 
-- **Source version**: install Python 3.10 + dependencies (see README section 4), double-click `start.bat`.
+- **Source version**: install Python 3.10 + dependencies (see README section 4), double-click `start.vbs` (completely silent). `start.bat` / `一键启动.bat` remain as compatibility launchers and no longer leave a console open.
 - **Standalone EXE**: download from GitHub Releases, extract (EXE + `sites_data` + `custom-sites` + `config.json` in the same folder), double-click the EXE. No Python needed.
 
 Both versions open the same GUI with three pages in the left sidebar: **🏠 Home · 🔄 Format Converter · ⚙ Settings**.
 
-> Keep the console window open while downloading — progress is shown there. Close it or the main window to quit.
+> All progress is shown in the GUI; there is no console window. Close the main window to exit the program and its Python process.
 
 ---
 

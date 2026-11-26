@@ -251,13 +251,15 @@ class ComicCrawler:
                 r = subprocess.run(
                     ['wmic', 'process', 'where', f"name='{name}'",
                      'get', 'ProcessId,CommandLine', '/format:csv'],
-                    capture_output=True, text=True, encoding='gbk', errors='ignore')
+                    capture_output=True, text=True, encoding='gbk', errors='ignore',
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 for line in r.stdout.splitlines():
                     if 'remote-debugging-port' in line:
                         m = re.search(r'(\d+)\s*$', line.strip())
                         if m:
                             subprocess.run(['taskkill', '/F', '/PID', m.group(1)],
-                                           capture_output=True)
+                                           capture_output=True,
+                                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             except Exception:
                 pass
 

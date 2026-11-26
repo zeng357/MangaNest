@@ -147,7 +147,8 @@ def run_bt(chunk_dir, log_path, extra_env=None):
            '--exec_dirs', chunk_dir, '--export-translation-txt']
     with open(log_path, 'w', encoding='utf-8', errors='ignore') as f:
         proc = subprocess.run(cmd, cwd=BT_ROOT, stdout=f, stderr=subprocess.STDOUT,
-                              env=env, stdin=subprocess.DEVNULL)
+                              env=env, stdin=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     return proc.returncode
 
 

@@ -4,6 +4,13 @@
 
 A manga downloader that runs on Windows and supports multiple manga websites: built-in crawlers + custom site adapters (JSON rules) + an Auto Site Analyzer wizard — paste any new website, the program automatically analyzes its search/chapter/image structure and generates a reusable adapter.
 
+**v1.7.6 — no console window, GUI-owned process**
+- **The black console is gone**: `start.bat` and `一键启动.bat` now launch `pythonw.exe` and return immediately, so the GUI owns the process; closing the main window exits `pythonw` and no cmd window stays behind.
+- **Silent launcher**: `start.vbs` starts the same GUI with no console; `start.vbs` can be used as the default desktop shortcut.
+- **Child processes hidden**: `wmic` / `taskkill` browser cleanup, Calibre MOBI conversion and BallonsTranslator headless translation now run with `CREATE_NO_WINDOW`, so background tools do not flash a black box.
+- **Note**: double-clicking a `.bat` file can still show a momentary cmd flash (a Windows shell behaviour); use `start.vbs` for a completely silent start. Closing the GUI closes the Python process; no `pause` keeps a console alive.
+- Tests: `START_BAT_NO_CMD_PASS`, `START_VBS_NO_CMD_PASS`, `CLOSE_GUI_EXITS_PYTHONW_PASS`, `PY_COMPILE_BOTH_PASS`.
+
 **v1.7.5 — readable download dialogs and chapter table**
 - **Download-site dialogs enlarged**: «多线程高速下载网站» and «模拟人工下载范围» now open at 700×560, are resizable (minimum 600×460), and use a 50×18 list that expands with the window. The old auto-sized windows were 469×372 and 291×397 and could not be resized, which made the scrollbar nearly unusable.
 - **Chapter table enlarged**: the chapter list canvas grew from a fixed 28 px to 200 px, so about 8 chapter rows are visible and the scrollbar has a usable thumb; mouse-wheel scrolling still works independently from the page.
@@ -127,7 +134,7 @@ A manga downloader that runs on Windows and supports multiple manga websites: bu
 
 ## 1. UI Guide
 
-After launch (double-click `start.bat`), the main window has four pages in the left sidebar (plus a collapsible **🔐 Password Manager** menu below Universal Image Downloader):
+After launch (double-click `start.vbs`; `start.bat` remains as a compatibility launcher), the main window has four pages in the left sidebar (plus a collapsible **🔐 Password Manager** menu below Universal Image Downloader):
 
 | Page | Purpose |
 |---|---|
@@ -168,7 +175,7 @@ ComicName/
     └── ...
 ```
 
-> Keep the console window open while downloading; close it or the main window to quit.
+> All progress is shown in the GUI; there is no console window. Close the main window to exit the program and its Python process.
 
 ### 🔐 Secure Login Vault (v1.1.1)
 
@@ -337,7 +344,9 @@ Node.js: https://nodejs.org/ (runtime for execjs).
 
 ## 5. One-Click Start
 
-Double-click **`start.bat`** (auto-checks Python, network and dependencies, then opens the GUI).
+Double-click **`start.vbs`** for a completely silent start (recommended). `start.bat` and `一键启动.bat` are compatibility launchers: they start `pythonw.exe` and return immediately, so no console stays open; a `.bat` double-click may still show a momentary cmd flash.
+
+The GUI process owns the program: close the main window (or click **退出**) and the Python process exits with it.
 
 > Missing module? `pip install <module>` then start again.
 

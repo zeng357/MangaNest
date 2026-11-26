@@ -438,7 +438,8 @@ def images_to_mobi(image_paths, out_mobi, comic_name='漫画', chapter_name='', 
         import subprocess
         proc = subprocess.run(
             [exe, epub_tmp, out_mobi],
-            capture_output=True, text=True, timeout=600)
+            capture_output=True, text=True, timeout=600,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if proc.returncode != 0:
             log(f"    Calibre 转换失败: {(proc.stderr or proc.stdout)[-300:]}")
             return False
